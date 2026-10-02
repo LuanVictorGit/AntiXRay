@@ -1,0 +1,24 @@
+name: AntiXray
+version: 1.0.0
+main: com.lhawk.antixray.AntiXray
+author: lHawk_
+depend: [packetevents]
+api-version: 1.13
+commands:
+  antixray:
+    description: Comando principal do AntiXray
+    permission: antixray.admin
+    usage: /antixray [reload|status|debug]
+permissions:
+  antixray.admin:
+    description: Permissao geral de administracao
+    default: op
+  antixray.bypass:
+    description: Ignora a protecao de ocultacao de minerios
+    default: false
+  antixray.reload:
+    description: Permissao para recarregar a configuracao
+    default: op
+  antixray.debug:
+    description: Permissao para alternar diagnosticos
+    default: op

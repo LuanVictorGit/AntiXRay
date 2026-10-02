@@ -1,0 +1,57 @@
+enabled: true
+
+worlds:
+  - world
+  - world_nether
+  - survival
+  - survival_nether
+  - survival_spawn
+
+hidden-blocks:
+  - DIAMOND_ORE
+  - DEEPSLATE_DIAMOND_ORE
+  - GOLD_ORE
+  - DEEPSLATE_GOLD_ORE
+  - NETHER_GOLD_ORE
+  - IRON_ORE
+  - DEEPSLATE_IRON_ORE
+  - COAL_ORE
+  - DEEPSLATE_COAL_ORE
+  - REDSTONE_ORE
+  - DEEPSLATE_REDSTONE_ORE
+  - LAPIS_ORE
+  - DEEPSLATE_LAPIS_ORE
+  - EMERALD_ORE
+  - DEEPSLATE_EMERALD_ORE
+  - COPPER_ORE
+  - DEEPSLATE_COPPER_ORE
+  - NETHER_QUARTZ_ORE
+  - ANCIENT_DEBRIS
+
+replacements:
+  normal: STONE
+  deepslate: DEEPSLATE
+  nether: NETHERRACK
+  end: END_STONE
+
+reveal-distance: 2
+max-cache-size: 4096
+check-bypass: false
+debug: false
+log-level: INFO
+
+messages:
+  prefix: "&8[&bAntiXray&8] &7"
+  reloaded: "&aConfiguracao recarregada com sucesso."
+  no-permission: "&cVoce nao tem permissao para executar este comando."
+  status:
+    header: "&b=== &fStatus do AntiXray &b==="
+    enabled: "&7Status: &aAtivado"
+    disabled: "&7Status: &cDesativado"
+    version: "&7Protocolo do Servidor: &f%version%"
+    worlds: "&7Mundos Protegidos: &f%worlds%"
+    stats: "&7Chunks Processados: &f%chunks_proc% &7(Modificados: &a%chunks_mod%&7) | Minerios Ocultados: &e%ores_hidden%"
+    cached-players: "&7Jogadores em Cache: &f%players%"
+    cached-chunks: "&7Bordas de Chunks em Cache: &f%chunks%"
+    debug-mode: "&7Modo Debug: &f%debug%"
+  debug-toggle: "&7Modo debug &f%state%&7."
