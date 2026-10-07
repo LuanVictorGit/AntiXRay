@@ -149,12 +149,11 @@ public class ChunkManager implements Listener {
                         int worldX = (chunkX << 4) + x;
                         int worldY = baseY + y;
                         int worldZ = (chunkZ << 4) + z;
-                        if (blockManager.isRevealed(player, worldX, worldY, worldZ)) continue;
 
-                        // Minerio exposto (caverna, agua, lava) tambem e escondido: o x-ray veria
-                        // atraves das paredes. Ele e revelado quando o jogador chega perto.
+                        // Bloco exposto (caverna, agua, lava) tambem e escondido: o x-ray veria atraves
+                        // das paredes. Ele aparece enquanto estiver na linha de visao do jogador
                         if (!isEnclosed(cache, sections, s, chunkX, chunkZ, x, y, z)) {
-                            if (!proximity || !config.hidesExposedAt(worldY, env)) continue;
+                            if (!proximity) continue;
                             if (exposedOres == null) exposedOres = new ArrayList<Long>();
                             exposedOres.add(BlockManager.pack(worldX, worldY, worldZ));
                         }

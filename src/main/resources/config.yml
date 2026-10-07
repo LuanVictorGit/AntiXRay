@@ -71,15 +71,11 @@ replacements:
   nether: NETHERRACK
   end: END_STONE
 
-reveal-distance: 2
-# Minerios expostos (em cavernas, agua, lava) ficam escondidos e so aparecem
-# quando o jogador chega a esta distancia em blocos. Bloqueia x-ray por textura
-# e por hack. 0 = desativa (minerios expostos sempre visiveis). Maximo: 64
+# Blocos escondidos expostos (cavernas, agua, lava) so aparecem quando o jogador os ve de
+# verdade: sem parede no caminho e a ate esta distancia em blocos. Quando saem da visao,
+# somem de novo. Assim nada e visto atraves das paredes, nem com textura ou hack de x-ray.
+# 0 = desativa (expostos sempre visiveis). Maximo: 64
 proximity-distance: 16
-# Blocos expostos so sao escondidos abaixo desta altura no overworld: trilhos, baus e
-# minerios da superficie continuam visiveis de longe. Nether e End nao tem limite.
-proximity-max-height: 64
-max-cache-size: 4096
 check-bypass: false
 debug: false
 log-level: INFO

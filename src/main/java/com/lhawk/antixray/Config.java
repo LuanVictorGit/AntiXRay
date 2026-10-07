@@ -28,10 +28,7 @@ public class Config {
     private String deepslateReplacement;
     private String netherReplacement;
     private String endReplacement;
-    private int revealDistance;
     private volatile int proximityDistance;
-    private volatile int proximityMaxHeight;
-    private int maxCacheSize;
     private volatile boolean checkBypass;
     private volatile boolean debug;
     private String logLevel;
@@ -87,10 +84,7 @@ public class Config {
         this.netherReplacement = c.getString("replacements.nether", "NETHERRACK");
         this.endReplacement = c.getString("replacements.end", "END_STONE");
 
-        this.revealDistance = c.getInt("reveal-distance", 2);
         this.proximityDistance = Math.max(0, Math.min(64, c.getInt("proximity-distance", 16)));
-        this.proximityMaxHeight = c.getInt("proximity-max-height", 64);
-        this.maxCacheSize = c.getInt("max-cache-size", 4096);
         this.checkBypass = c.getBoolean("check-bypass", false);
         this.debug = c.getBoolean("debug", false);
         this.logLevel = c.getString("log-level", "INFO");
@@ -164,15 +158,7 @@ public class Config {
     public String getDeepslateReplacement() { return deepslateReplacement; }
     public String getNetherReplacement() { return netherReplacement; }
     public String getEndReplacement() { return endReplacement; }
-    public int getRevealDistance() { return revealDistance; }
     public int getProximityDistance() { return proximityDistance; }
-
-    // Blocos expostos (cavernas) so sao escondidos abaixo da altura limite no overworld:
-    // trilhos, baus e minerios da superficie continuam visiveis. Nether e End nao tem limite
-    public boolean hidesExposedAt(int y, World.Environment env) {
-        return env != World.Environment.NORMAL || y < proximityMaxHeight;
-    }
-    public int getMaxCacheSize() { return maxCacheSize; }
     public boolean isCheckBypass() { return checkBypass; }
     public boolean isDebug() { return debug; }
     public void setDebug(boolean debug) {

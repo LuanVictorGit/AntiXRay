@@ -27,6 +27,8 @@ public class Compatibility {
 
     // Um unico array trocado por inteiro no reload: leitura sem lock e sem corrida entre tabelas
     private volatile int[] info = new int[65536];
+    // O mesmo por Material (ordinal): a linha de visao le muitos blocos do mundo
+    private volatile int[] materialInfo = new int[Material.values().length];
     // Substituto escolhido por nome de bloco ("infested_stone=stone", "rail=air")
     private volatile Map<String, Integer> explicitReplacements = Collections.emptyMap();
 
@@ -60,6 +62,7 @@ public class Compatibility {
         }
         this.explicitReplacements = Collections.unmodifiableMap(explicit);
         this.info = new int[65536];
+        this.materialInfo = new int[Material.values().length];
     }
 
     // Como stateId, mas aceita ar ("air" = ID 0). Devolve -1 se o bloco nao existir nesta versao
@@ -139,13 +142,33 @@ public class Compatibility {
     }
 
     public boolean isOre(Material material) {
-        return material != null && plugin.getConfiguration().getHiddenBlocks().contains(Config.normalize(material.name()));
+        return (getInfo(material) & ORE) != 0;
     }
 
     public boolean isOccluding(Material material) {
-        if (material == null) return false;
-        Boolean byName = isOccludingName(Config.normalize(material.name()));
-        return byName != null ? byName : material.isOccluding();
+        return (getInfo(material) & OCCLUDING) != 0;
+    }
+
+    private int getInfo(Material material) {
+        if (material == null) return 0;
+        int[] table = this.materialInfo;
+        int index = material.ordinal();
+        if (index >= table.length) return computeInfo(material);
+        int value = table[index];
+        if (value == 0) {
+            value = computeInfo(material);
+            table[index] = value;
+        }
+        return value;
+    }
+
+    private int computeInfo(Material material) {
+        String name = Config.normalize(material.name());
+        int value = POPULATED;
+        if (plugin.getConfiguration().getHiddenBlocks().contains(name)) value |= ORE;
+        Boolean byName = isOccludingName(name);
+        if (byName != null ? byName : material.isOccluding()) value |= OCCLUDING;
+        return value;
     }
 
     private boolean isOreType(StateType type) {

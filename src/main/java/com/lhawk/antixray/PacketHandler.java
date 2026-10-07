@@ -85,7 +85,7 @@ public class PacketHandler extends PacketListenerAbstract {
             } else if (type == PacketType.Play.Server.BLOCK_CHANGE) {
                 WrapperPlayServerBlockChange wrapper = new WrapperPlayServerBlockChange(event);
                 Vector3i pos = wrapper.getBlockPosition();
-                if (shouldHide(player, world, wrapper.getBlockId(), pos.getX(), pos.getY(), pos.getZ())) {
+                if (shouldHide(player, wrapper.getBlockId(), pos.getX(), pos.getY(), pos.getZ())) {
                     wrapper.setBlockID(hide(player, world, wrapper.getBlockId(), pos.getX(), pos.getY(), pos.getZ()));
                     event.markForReEncode(true);
                 }
@@ -95,7 +95,7 @@ public class PacketHandler extends PacketListenerAbstract {
                 if (blocks == null) return;
                 boolean modified = false;
                 for (EncodedBlock b : blocks) {
-                    if (shouldHide(player, world, b.getBlockId(), b.getX(), b.getY(), b.getZ())) {
+                    if (shouldHide(player, b.getBlockId(), b.getX(), b.getY(), b.getZ())) {
                         b.setBlockId(hide(player, world, b.getBlockId(), b.getX(), b.getY(), b.getZ()));
                         modified = true;
                     }
@@ -134,14 +134,17 @@ public class PacketHandler extends PacketListenerAbstract {
         return "nome=" + user.getName() + ", uuid=" + user.getUUID();
     }
 
-    // Na superficie do overworld (acima de proximity-max-height) blocos colocados/atualizados ficam visiveis
-    private boolean shouldHide(Player player, World world, int blockId, int x, int y, int z) {
-        return plugin.getCompatibility().isOre(blockId)
-            && plugin.getConfiguration().hidesExposedAt(y, world.getEnvironment())
-            && !plugin.getBlockManager().isRevealed(player, x, y, z);
+    // Bloco escondido que o jogador nao esta vendo agora. Outro bloco no lugar (minerado, trocado):
+    // o que ele via ali deixa de valer
+    private boolean shouldHide(Player player, int blockId, int x, int y, int z) {
+        if (!plugin.getCompatibility().isOre(blockId)) {
+            plugin.getBlockManager().unmarkRevealed(player.getUniqueId(), x, y, z);
+            return false;
+        }
+        return !plugin.getBlockManager().isRevealed(player, x, y, z);
     }
 
-    // Devolve o bloco que substitui o minerio; ele fica pendente e so aparece de perto se estiver exposto
+    // Devolve o bloco que substitui o escondido; ele passa a ser vigiado e aparece quando estiver na visao do jogador
     private int hide(Player player, World world, int blockId, int x, int y, int z) {
         if (plugin.getConfiguration().getProximityDistance() > 0) {
             plugin.getBlockManager().addHiddenOre(player, x, y, z);
