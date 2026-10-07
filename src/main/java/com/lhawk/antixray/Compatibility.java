@@ -8,110 +8,106 @@ import com.github.retrooper.packetevents.protocol.world.states.type.StateTypes;
 import org.bukkit.Material;
 import org.bukkit.World;
 
-import java.util.Arrays;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Locale;
 
 public class Compatibility {
 
+    private static final byte POPULATED = 1;
+    private static final byte ORE = 2;
+    private static final byte OCCLUDING = 4;
+
     private final AntiXray plugin;
-    private volatile boolean[] oreTable;
-    private volatile boolean[] occludingTable;
-    private volatile boolean[] populated;
+    // Os pacotes de saida usam os IDs da versao do servidor; o ViaVersion converte para o cliente depois
+    private final ClientVersion serverVersion;
 
-    private final Map<ClientVersion, WrappedBlockState> stoneCache = new ConcurrentHashMap<ClientVersion, WrappedBlockState>();
-    private final Map<ClientVersion, WrappedBlockState> deepslateCache = new ConcurrentHashMap<ClientVersion, WrappedBlockState>();
-    private final Map<ClientVersion, WrappedBlockState> netherrackCache = new ConcurrentHashMap<ClientVersion, WrappedBlockState>();
-    private final Map<ClientVersion, WrappedBlockState> endStoneCache = new ConcurrentHashMap<ClientVersion, WrappedBlockState>();
+    // Um unico array trocado por inteiro no reload: leitura sem lock e sem corrida entre tabelas
+    private volatile byte[] flags = new byte[65536];
 
-    private ClientVersion serverVersion;
+    private volatile int normalId;
+    private volatile int deepslateId;
+    private volatile int netherId;
+    private volatile int endId;
 
     public Compatibility(AntiXray plugin) {
         this.plugin = plugin;
-        this.oreTable = new boolean[65536];
-        this.occludingTable = new boolean[65536];
-        this.populated = new boolean[65536];
+        this.serverVersion = PacketEvents.getAPI().getServerManager().getVersion().toClientVersion();
+        reload();
+    }
+
+    public void reload() {
+        Config c = plugin.getConfiguration();
+        int normal = stateId(c.getNormalReplacement(), StateTypes.STONE.createBlockState(serverVersion).getGlobalId());
+        this.normalId = normal;
+        this.deepslateId = stateId(c.getDeepslateReplacement(), normal);
+        this.netherId = stateId(c.getNetherReplacement(), normal);
+        this.endId = stateId(c.getEndReplacement(), normal);
+        this.flags = new byte[65536];
+    }
+
+    // Converte o bloco configurado no ID global; usa o fallback se nao existir nesta versao
+    private int stateId(String name, int fallback) {
         try {
-            this.serverVersion = PacketEvents.getAPI().getServerManager().getVersion().toClientVersion();
+            StateType type = StateTypes.getByName(name.trim().toLowerCase(Locale.ROOT));
+            int id = type != null ? type.createBlockState(serverVersion).getGlobalId() : 0;
+            return id > 0 ? id : fallback;
         } catch (Throwable t) {
-            this.serverVersion = ClientVersion.getLatest();
+            return fallback;
         }
     }
 
-    private synchronized void ensureCapacity(int stateId) {
-        if (stateId >= populated.length) {
-            int newCap = Math.max(stateId + 8192, populated.length * 2);
-            this.oreTable = Arrays.copyOf(this.oreTable, newCap);
-            this.occludingTable = Arrays.copyOf(this.occludingTable, newCap);
-            this.populated = Arrays.copyOf(this.populated, newCap);
-        }
-    }
-
-    private synchronized void populate(int stateId) {
-        ensureCapacity(stateId);
-        if (populated[stateId]) return;
-        try {
-            ClientVersion ver = this.serverVersion != null ? this.serverVersion : ClientVersion.getLatest();
-            WrappedBlockState state = WrappedBlockState.getByGlobalId(ver, stateId, false);
-            if (state != null) {
-                StateType type = state.getType();
-                if (type != null) {
-                    oreTable[stateId] = isOreType(type);
-                    occludingTable[stateId] = isOccludingType(type);
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        populated[stateId] = true;
+    public int getReplacementId(int y, World.Environment env) {
+        if (env == World.Environment.NETHER) return netherId;
+        if (env == World.Environment.THE_END) return endId;
+        return y <= 0 ? deepslateId : normalId;
     }
 
     public boolean isOre(int stateId) {
-        if (stateId <= 0) return false;
-        if (stateId >= populated.length || !populated[stateId]) {
-            populate(stateId);
-        }
-        return oreTable[stateId];
+        return (getFlags(stateId) & ORE) != 0;
     }
 
     public boolean isOccluding(int stateId) {
-        if (stateId <= 0) return false;
-        if (stateId >= populated.length || !populated[stateId]) {
-            populate(stateId);
+        return (getFlags(stateId) & OCCLUDING) != 0;
+    }
+
+    private int getFlags(int stateId) {
+        if (stateId <= 0) return 0;
+        byte[] table = this.flags;
+        if (stateId >= table.length) return computeFlags(stateId);
+        byte f = table[stateId];
+        if (f == 0) {
+            f = computeFlags(stateId);
+            table[stateId] = f;
         }
-        return occludingTable[stateId];
+        return f;
+    }
+
+    private byte computeFlags(int stateId) {
+        byte f = POPULATED;
+        try {
+            StateType type = WrappedBlockState.getByGlobalId(serverVersion, stateId, false).getType();
+            if (isOreType(type)) f |= ORE;
+            if (isOccludingType(type)) f |= OCCLUDING;
+        } catch (Throwable ignored) {
+        }
+        return f;
     }
 
     public boolean isOre(Material material) {
-        if (material == null) return false;
-        String name = material.name().toLowerCase();
-        if (name.startsWith("minecraft:")) name = name.substring(10);
-        return plugin.getConfiguration().getHiddenBlocks().contains(name);
+        return material != null && plugin.getConfiguration().getHiddenBlocks().contains(Config.normalize(material.name()));
     }
 
     public boolean isOccluding(Material material) {
-        if (material == null) return false;
-        try {
-            return material.isOccluding();
-        } catch (Throwable t) {
-            return material.isSolid();
-        }
+        return material != null && material.isOccluding();
     }
 
     private boolean isOreType(StateType type) {
         if (type == null || type.isAir()) return false;
-        String name = type.getName();
-        if (name == null) return false;
-        name = name.toLowerCase();
-        if (name.startsWith("minecraft:")) name = name.substring(10);
-        return plugin.getConfiguration().getHiddenBlocks().contains(name);
+        return plugin.getConfiguration().getHiddenBlocks().contains(Config.normalize(type.getName()));
     }
 
     private boolean isOccludingType(StateType type) {
         if (type == null || type.isAir()) return false;
-        String name = type.getName();
-        if (name == null) return false;
-        name = name.toLowerCase();
-        if (name.startsWith("minecraft:")) name = name.substring(10);
+        String name = Config.normalize(type.getName());
 
         if (name.contains("air") || name.equals("water") || name.equals("lava")
             || name.contains("glass") || name.contains("leaves") || name.contains("slab")
@@ -142,93 +138,5 @@ public class Compatibility {
         }
 
         return type.isSolid() || type.isBlocking();
-    }
-
-    public WrappedBlockState getReplacementState(int originalStateId, int y, World.Environment env, ClientVersion version) {
-        if (env == World.Environment.NETHER) {
-            return getNetherrackState(version);
-        }
-        if (env == World.Environment.THE_END) {
-            return getEndStoneState(version);
-        }
-        if (y <= 0) {
-            return getDeepslateState(version);
-        }
-        return getStoneState(version);
-    }
-
-    public WrappedBlockState getStoneState(ClientVersion version) {
-        ClientVersion key = version != null ? version : ClientVersion.getLatest();
-        WrappedBlockState state = stoneCache.get(key);
-        if (state == null) {
-            try {
-                state = StateTypes.STONE.createBlockState(key);
-            } catch (Throwable t) {
-                state = WrappedBlockState.getByGlobalId(key, 1, false);
-            }
-            if (state != null) stoneCache.put(key, state);
-        }
-        return state;
-    }
-
-    public WrappedBlockState getDeepslateState(ClientVersion version) {
-        ClientVersion key = version != null ? version : ClientVersion.getLatest();
-        WrappedBlockState state = deepslateCache.get(key);
-        if (state == null) {
-            try {
-                if (StateTypes.DEEPSLATE != null && key.isNewerThanOrEquals(ClientVersion.V_1_18)) {
-                    state = StateTypes.DEEPSLATE.createBlockState(key);
-                }
-            } catch (Throwable ignored) {
-            }
-            if (state == null) {
-                state = getStoneState(key);
-            }
-            deepslateCache.put(key, state);
-        }
-        return state;
-    }
-
-    public WrappedBlockState getNetherrackState(ClientVersion version) {
-        ClientVersion key = version != null ? version : ClientVersion.getLatest();
-        WrappedBlockState state = netherrackCache.get(key);
-        if (state == null) {
-            try {
-                state = StateTypes.NETHERRACK.createBlockState(key);
-            } catch (Throwable t) {
-                state = WrappedBlockState.getByGlobalId(key, 87, false);
-            }
-            if (state != null) netherrackCache.put(key, state);
-        }
-        return state;
-    }
-
-    public WrappedBlockState getEndStoneState(ClientVersion version) {
-        ClientVersion key = version != null ? version : ClientVersion.getLatest();
-        WrappedBlockState state = endStoneCache.get(key);
-        if (state == null) {
-            try {
-                state = StateTypes.END_STONE.createBlockState(key);
-            } catch (Throwable t) {
-                state = getStoneState(key);
-            }
-            if (state != null) endStoneCache.put(key, state);
-        }
-        return state;
-    }
-
-    public synchronized void reload() {
-        this.oreTable = new boolean[65536];
-        this.occludingTable = new boolean[65536];
-        this.populated = new boolean[65536];
-        this.stoneCache.clear();
-        this.deepslateCache.clear();
-        this.netherrackCache.clear();
-        this.endStoneCache.clear();
-        try {
-            this.serverVersion = PacketEvents.getAPI().getServerManager().getVersion().toClientVersion();
-        } catch (Throwable t) {
-            this.serverVersion = ClientVersion.getLatest();
-        }
     }
 }

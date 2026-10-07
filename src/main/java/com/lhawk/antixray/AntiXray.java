@@ -1,7 +1,6 @@
 package com.lhawk.antixray;
 
 import com.github.retrooper.packetevents.PacketEvents;
-import io.github.retrooper.packetevents.factory.spigot.SpigotPacketEventsBuilder;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public class AntiXray extends JavaPlugin {
@@ -19,20 +18,6 @@ public class AntiXray extends JavaPlugin {
     }
 
     @Override
-    public void onLoad() {
-        instance = this;
-        try {
-            if (!PacketEvents.getAPI().isLoaded()) {
-                PacketEvents.setAPI(SpigotPacketEventsBuilder.build(this));
-                PacketEvents.getAPI().getSettings().checkForUpdates(false).bStats(false);
-                PacketEvents.getAPI().load();
-            }
-        } catch (Throwable t) {
-            getLogger().warning("Falha ao carregar PacketEvents: " + t.getMessage());
-        }
-    }
-
-    @Override
     public void onEnable() {
         instance = this;
         this.config = new Config(this);
@@ -41,14 +26,8 @@ public class AntiXray extends JavaPlugin {
         this.chunkManager = new ChunkManager(this);
         this.packetHandler = new PacketHandler(this);
 
-        try {
-            if (!PacketEvents.getAPI().isInitialized()) {
-                PacketEvents.getAPI().init();
-            }
-            PacketEvents.getAPI().getEventManager().registerListener(this.packetHandler);
-        } catch (Throwable t) {
-            getLogger().severe("Erro ao registrar PacketHandler: " + t.getMessage());
-        }
+        // O PacketEvents e um plugin separado (depend no plugin.yml) e ja vem carregado e iniciado
+        PacketEvents.getAPI().getEventManager().registerListener(this.packetHandler);
 
         getServer().getPluginManager().registerEvents(this.blockManager, this);
         getServer().getPluginManager().registerEvents(this.chunkManager, this);

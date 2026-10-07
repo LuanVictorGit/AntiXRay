@@ -1,12 +1,11 @@
 package com.lhawk.antixray;
 
 import com.github.retrooper.packetevents.PacketEvents;
-import com.github.retrooper.packetevents.protocol.world.states.WrappedBlockState;
 import com.github.retrooper.packetevents.util.Vector3i;
 import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerBlockChange;
 import org.bukkit.Location;
-import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -28,6 +27,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
+// Os eventos rodam na thread dona do bloco (regiao no Folia): so mexe em blocos e jogadores proximos
 public class BlockManager implements Listener {
 
     private final AntiXray plugin;
@@ -50,21 +50,21 @@ public class BlockManager implements Listener {
     public boolean isRevealed(Player player, int x, int y, int z) {
         if (player == null) return false;
         Map<Long, Boolean> map = playerCaches.get(player.getUniqueId());
-        if (map == null) return false;
-        return map.containsKey(pack(x, y, z));
+        return map != null && map.containsKey(pack(x, y, z));
     }
 
     public void markRevealed(UUID uuid, int x, int y, int z) {
         Map<Long, Boolean> map = playerCaches.get(uuid);
         if (map == null) {
             final int max = plugin.getConfiguration().getMaxCacheSize();
-            map = Collections.synchronizedMap(new LinkedHashMap<Long, Boolean>(max, 0.75f, true) {
+            map = Collections.synchronizedMap(new LinkedHashMap<Long, Boolean>(64, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<Long, Boolean> eldest) {
                     return size() > max;
                 }
             });
-            playerCaches.put(uuid, map);
+            Map<Long, Boolean> existing = playerCaches.putIfAbsent(uuid, map);
+            if (existing != null) map = existing;
         }
         map.put(pack(x, y, z), Boolean.TRUE);
     }
@@ -80,30 +80,16 @@ public class BlockManager implements Listener {
         playerCaches.remove(uuid);
     }
 
-    public void removePlayer(UUID uuid) {
-        playerCaches.remove(uuid);
-    }
-
     public int getCachedPlayerCount() {
         return playerCaches.size();
     }
 
     public void revealAround(Player miner, Block center, int radius) {
-        World world = center.getWorld();
-        int cx = center.getX();
-        int cy = center.getY();
-        int cz = center.getZ();
-
         for (int[] off : OFFSETS) {
-            Block adj = world.getBlockAt(cx + off[0], cy + off[1], cz + off[2]);
+            Block adj = center.getRelative(off[0], off[1], off[2]);
             if (plugin.getCompatibility().isOre(adj.getType())) {
                 revealToPlayer(miner, adj);
-                for (Player nearby : world.getPlayers()) {
-                    if (nearby.equals(miner)) continue;
-                    if (nearby.getLocation().distanceSquared(adj.getLocation()) <= 64.0) {
-                        revealToPlayer(nearby, adj);
-                    }
-                }
+                revealToNearby(adj, 8);
             }
         }
 
@@ -112,7 +98,7 @@ public class BlockManager implements Listener {
                 for (int dy = -radius; dy <= radius; dy++) {
                     for (int dz = -radius; dz <= radius; dz++) {
                         if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > radius) continue;
-                        Block b = world.getBlockAt(cx + dx, cy + dy, cz + dz);
+                        Block b = center.getRelative(dx, dy, dz);
                         if (plugin.getCompatibility().isOre(b.getType())) {
                             revealToPlayer(miner, b);
                         }
@@ -122,9 +108,21 @@ public class BlockManager implements Listener {
         }
     }
 
-    private void revealToPlayer(Player player, Block oreBlock) {
-        markRevealed(player.getUniqueId(), oreBlock.getX(), oreBlock.getY(), oreBlock.getZ());
-        sendBlockUpdate(player, oreBlock);
+    // getNearbyEntities so enxerga a regiao atual, entao e seguro no Folia (world.getPlayers() pegaria outras regioes)
+    private void revealToNearby(Block ore, double radius) {
+        Location loc = ore.getLocation();
+        double maxDistanceSq = radius * radius;
+        for (Entity entity : ore.getWorld().getNearbyEntities(loc, radius, radius, radius)) {
+            if (entity instanceof Player && entity.getLocation().distanceSquared(loc) <= maxDistanceSq) {
+                revealToPlayer((Player) entity, ore);
+            }
+        }
+    }
+
+    private void revealToPlayer(Player player, Block ore) {
+        if (isRevealed(player, ore.getX(), ore.getY(), ore.getZ())) return;
+        markRevealed(player.getUniqueId(), ore.getX(), ore.getY(), ore.getZ());
+        sendBlockUpdate(player, ore);
     }
 
     private void sendBlockUpdate(Player player, Block block) {
@@ -140,17 +138,21 @@ public class BlockManager implements Listener {
     }
 
     private void sendReplacementBlock(Player player, Block block) {
-        WrappedBlockState repl = plugin.getCompatibility().getReplacementState(
-            0,
-            block.getY(),
-            block.getWorld().getEnvironment(),
-            PacketEvents.getAPI().getPlayerManager().getClientVersion(player)
-        );
+        int replacement = plugin.getCompatibility().getReplacementId(block.getY(), block.getWorld().getEnvironment());
         WrapperPlayServerBlockChange packet = new WrapperPlayServerBlockChange(
             new Vector3i(block.getX(), block.getY(), block.getZ()),
-            repl.getGlobalId()
+            replacement
         );
         PacketEvents.getAPI().getPlayerManager().sendPacket(player, packet);
+    }
+
+    private boolean isEnclosed(Block block) {
+        for (int[] off : OFFSETS) {
+            if (!plugin.getCompatibility().isOccluding(block.getRelative(off[0], off[1], off[2]).getType())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -168,91 +170,48 @@ public class BlockManager implements Listener {
         Block placed = event.getBlock();
         Player player = event.getPlayer();
         if (!plugin.getConfiguration().isWorldProtected(placed.getWorld().getName())) return;
+        if (plugin.getConfiguration().isCheckBypass() && player.hasPermission("antixray.bypass")) return;
         if (!plugin.getCompatibility().isOccluding(placed.getType())) return;
 
-        World world = placed.getWorld();
-        int px = placed.getX();
-        int py = placed.getY();
-        int pz = placed.getZ();
-
         for (int[] off : OFFSETS) {
-            Block adj = world.getBlockAt(px + off[0], py + off[1], pz + off[2]);
-            if (plugin.getCompatibility().isOre(adj.getType())) {
-                boolean allOccluded = true;
-                for (int[] off2 : OFFSETS) {
-                    Block n = world.getBlockAt(adj.getX() + off2[0], adj.getY() + off2[1], adj.getZ() + off2[2]);
-                    if (!plugin.getCompatibility().isOccluding(n.getType())) {
-                        allOccluded = false;
-                        break;
-                    }
-                }
-                if (allOccluded) {
-                    unmarkRevealed(player.getUniqueId(), adj.getX(), adj.getY(), adj.getZ());
-                    sendReplacementBlock(player, adj);
-                }
+            Block adj = placed.getRelative(off[0], off[1], off[2]);
+            if (plugin.getCompatibility().isOre(adj.getType()) && isEnclosed(adj)) {
+                unmarkRevealed(player.getUniqueId(), adj.getX(), adj.getY(), adj.getZ());
+                sendReplacementBlock(player, adj);
             }
         }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityExplode(EntityExplodeEvent event) {
-        handleExplosion(event.getLocation(), event.blockList());
+        revealNeighbors(event.blockList(), 16);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onBlockExplode(BlockExplodeEvent event) {
-        handleExplosion(event.getBlock().getLocation(), event.blockList());
-    }
-
-    private void handleExplosion(Location loc, List<Block> blocks) {
-        if (!plugin.getConfiguration().isEnabled()) return;
-        if (loc.getWorld() == null || !plugin.getConfiguration().isWorldProtected(loc.getWorld().getName())) return;
-
-        World world = loc.getWorld();
-        for (Block b : blocks) {
-            int bx = b.getX();
-            int by = b.getY();
-            int bz = b.getZ();
-            for (int[] off : OFFSETS) {
-                Block adj = world.getBlockAt(bx + off[0], by + off[1], bz + off[2]);
-                if (plugin.getCompatibility().isOre(adj.getType())) {
-                    for (Player p : world.getPlayers()) {
-                        if (p.getLocation().distanceSquared(adj.getLocation()) <= 256.0) {
-                            revealToPlayer(p, adj);
-                        }
-                    }
-                }
-            }
-        }
+        revealNeighbors(event.blockList(), 16);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPistonExtend(BlockPistonExtendEvent event) {
-        handlePiston(event.getBlock(), event.getBlocks());
+        revealNeighbors(event.getBlocks(), 12);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPistonRetract(BlockPistonRetractEvent event) {
-        handlePiston(event.getBlock(), event.getBlocks());
+        revealNeighbors(event.getBlocks(), 12);
     }
 
-    private void handlePiston(Block piston, List<Block> blocks) {
-        if (!plugin.getConfiguration().isEnabled()) return;
-        World world = piston.getWorld();
-        if (!plugin.getConfiguration().isWorldProtected(world.getName())) return;
+    // Blocos removidos/movidos podem expor minerios vizinhos: revela para quem estiver perto
+    private void revealNeighbors(List<Block> blocks, double radius) {
+        if (!plugin.getConfiguration().isEnabled() || blocks.isEmpty()) return;
+        if (!plugin.getConfiguration().isWorldProtected(blocks.get(0).getWorld().getName())) return;
 
         for (Block b : blocks) {
-            int bx = b.getX();
-            int by = b.getY();
-            int bz = b.getZ();
             for (int[] off : OFFSETS) {
-                Block adj = world.getBlockAt(bx + off[0], by + off[1], bz + off[2]);
+                Block adj = b.getRelative(off[0], off[1], off[2]);
                 if (plugin.getCompatibility().isOre(adj.getType())) {
-                    for (Player p : world.getPlayers()) {
-                        if (p.getLocation().distanceSquared(adj.getLocation()) <= 144.0) {
-                            revealToPlayer(p, adj);
-                        }
-                    }
+                    revealToNearby(adj, radius);
                 }
             }
         }
@@ -260,7 +219,7 @@ public class BlockManager implements Listener {
 
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
-        removePlayer(event.getPlayer().getUniqueId());
+        clearPlayerCache(event.getPlayer().getUniqueId());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

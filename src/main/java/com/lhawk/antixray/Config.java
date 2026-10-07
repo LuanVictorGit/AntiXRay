@@ -5,23 +5,24 @@ import org.bukkit.configuration.file.FileConfiguration;
 
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 public class Config {
 
     private final AntiXray plugin;
-    private boolean enabled;
-    private final Set<String> worlds = new HashSet<String>();
-    private final Set<String> hiddenBlocks = new HashSet<String>();
+    // Lidos pelas threads do Netty e das regioes (Folia): os conjuntos sao imutaveis e trocados por inteiro no reload
+    private volatile boolean enabled;
+    private volatile Set<String> worlds = Collections.emptySet();
+    private volatile Set<String> hiddenBlocks = Collections.emptySet();
     private String normalReplacement;
     private String deepslateReplacement;
     private String netherReplacement;
     private String endReplacement;
     private int revealDistance;
     private int maxCacheSize;
-    private boolean checkBypass;
-    private boolean debug;
+    private volatile boolean checkBypass;
+    private volatile boolean debug;
     private String logLevel;
 
     private String prefix;
@@ -50,23 +51,17 @@ public class Config {
 
         this.enabled = c.getBoolean("enabled", true);
 
-        this.worlds.clear();
-        List<String> wList = c.getStringList("worlds");
-        if (wList != null) {
-            for (String w : wList) {
-                this.worlds.add(w.toLowerCase());
-            }
+        Set<String> newWorlds = new HashSet<String>();
+        for (String w : c.getStringList("worlds")) {
+            newWorlds.add(w.toLowerCase(Locale.ROOT));
         }
+        this.worlds = Collections.unmodifiableSet(newWorlds);
 
-        this.hiddenBlocks.clear();
-        List<String> hList = c.getStringList("hidden-blocks");
-        if (hList != null) {
-            for (String h : hList) {
-                String clean = h.trim().toLowerCase();
-                if (clean.startsWith("minecraft:")) clean = clean.substring(10);
-                this.hiddenBlocks.add(clean);
-            }
+        Set<String> newHiddenBlocks = new HashSet<String>();
+        for (String h : c.getStringList("hidden-blocks")) {
+            newHiddenBlocks.add(normalize(h));
         }
+        this.hiddenBlocks = Collections.unmodifiableSet(newHiddenBlocks);
 
         this.normalReplacement = c.getString("replacements.normal", "STONE");
         this.deepslateReplacement = c.getString("replacements.deepslate", "DEEPSLATE");
@@ -105,13 +100,20 @@ public class Config {
         return ChatColor.translateAlternateColorCodes('&', s != null ? s : "");
     }
 
+    // Locale.ROOT: em servidores com locale turco o "I" minusculo vira outro caractere e o nome nao bate
+    static String normalize(String blockName) {
+        String name = blockName.trim().toLowerCase(Locale.ROOT);
+        return name.startsWith("minecraft:") ? name.substring(10) : name;
+    }
+
     public boolean isEnabled() { return enabled; }
     public boolean isWorldProtected(String worldName) {
         if (worldName == null) return true;
-        return worlds.isEmpty() || worlds.contains("*") || worlds.contains(worldName.toLowerCase());
+        Set<String> worlds = this.worlds;
+        return worlds.isEmpty() || worlds.contains("*") || worlds.contains(worldName.toLowerCase(Locale.ROOT));
     }
-    public Set<String> getWorlds() { return Collections.unmodifiableSet(worlds); }
-    public Set<String> getHiddenBlocks() { return Collections.unmodifiableSet(hiddenBlocks); }
+    public Set<String> getWorlds() { return worlds; }
+    public Set<String> getHiddenBlocks() { return hiddenBlocks; }
     public String getNormalReplacement() { return normalReplacement; }
     public String getDeepslateReplacement() { return deepslateReplacement; }
     public String getNetherReplacement() { return netherReplacement; }
