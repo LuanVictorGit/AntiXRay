@@ -8,20 +8,27 @@ import com.github.retrooper.packetevents.protocol.world.states.type.StateTypes;
 import org.bukkit.Material;
 import org.bukkit.World;
 
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 
 public class Compatibility {
 
-    private static final byte POPULATED = 1;
-    private static final byte ORE = 2;
-    private static final byte OCCLUDING = 4;
+    private static final int POPULATED = 1;
+    private static final int ORE = 2;
+    private static final int OCCLUDING = 4;
+    // Bits 8+ guardam o substituto escolhido na lista (ID global + 1); 0 = automatico
+    private static final int REPLACEMENT_SHIFT = 8;
 
     private final AntiXray plugin;
     // Os pacotes de saida usam os IDs da versao do servidor; o ViaVersion converte para o cliente depois
     private final ClientVersion serverVersion;
 
     // Um unico array trocado por inteiro no reload: leitura sem lock e sem corrida entre tabelas
-    private volatile byte[] flags = new byte[65536];
+    private volatile int[] info = new int[65536];
+    // Substituto escolhido por nome de bloco ("infested_stone=stone", "rail=air")
+    private volatile Map<String, Integer> explicitReplacements = Collections.emptyMap();
 
     private volatile int normalId;
     private volatile int deepslateId;
@@ -41,7 +48,31 @@ public class Compatibility {
         this.deepslateId = stateId(c.getDeepslateReplacement(), normal);
         this.netherId = stateId(c.getNetherReplacement(), normal);
         this.endId = stateId(c.getEndReplacement(), normal);
-        this.flags = new byte[65536];
+
+        Map<String, Integer> explicit = new HashMap<String, Integer>();
+        for (Map.Entry<String, String> e : c.getHiddenReplacements().entrySet()) {
+            int id = explicitStateId(e.getValue());
+            if (id >= 0) {
+                explicit.put(e.getKey(), id);
+            } else {
+                plugin.getLogger().warning("Substituto invalido para " + e.getKey() + ": " + e.getValue() + " (usando pedra)");
+            }
+        }
+        this.explicitReplacements = Collections.unmodifiableMap(explicit);
+        this.info = new int[65536];
+    }
+
+    // Como stateId, mas aceita ar ("air" = ID 0). Devolve -1 se o bloco nao existir nesta versao
+    private int explicitStateId(String name) {
+        try {
+            StateType type = StateTypes.getByName(name.trim().toLowerCase(Locale.ROOT));
+            if (type == null) return -1;
+            if (type.isAir()) return type == StateTypes.AIR ? 0 : type.createBlockState(serverVersion).getGlobalId();
+            int id = type.createBlockState(serverVersion).getGlobalId();
+            return id > 0 ? id : -1;
+        } catch (Throwable t) {
+            return -1;
+        }
     }
 
     // Converte o bloco configurado no ID global; usa o fallback se nao existir nesta versao
@@ -55,41 +86,56 @@ public class Compatibility {
         }
     }
 
-    public int getReplacementId(int y, World.Environment env) {
+    // Bloco que aparece no lugar do bloco escondido: o escolhido na lista ou pedra/deepslate/netherrack/end stone
+    public int getReplacementId(int stateId, int y, World.Environment env) {
+        int explicit = (getInfo(stateId) >>> REPLACEMENT_SHIFT) - 1;
+        return explicit >= 0 ? explicit : getReplacementId(y, env);
+    }
+
+    public int getReplacementId(Material material, int y, World.Environment env) {
+        Integer explicit = material == null ? null : explicitReplacements.get(Config.normalize(material.name()));
+        return explicit != null ? explicit : getReplacementId(y, env);
+    }
+
+    private int getReplacementId(int y, World.Environment env) {
         if (env == World.Environment.NETHER) return netherId;
         if (env == World.Environment.THE_END) return endId;
         return y <= 0 ? deepslateId : normalId;
     }
 
     public boolean isOre(int stateId) {
-        return (getFlags(stateId) & ORE) != 0;
+        return (getInfo(stateId) & ORE) != 0;
     }
 
     public boolean isOccluding(int stateId) {
-        return (getFlags(stateId) & OCCLUDING) != 0;
+        return (getInfo(stateId) & OCCLUDING) != 0;
     }
 
-    private int getFlags(int stateId) {
+    private int getInfo(int stateId) {
         if (stateId <= 0) return 0;
-        byte[] table = this.flags;
-        if (stateId >= table.length) return computeFlags(stateId);
-        byte f = table[stateId];
-        if (f == 0) {
-            f = computeFlags(stateId);
-            table[stateId] = f;
+        int[] table = this.info;
+        if (stateId >= table.length) return computeInfo(stateId);
+        int value = table[stateId];
+        if (value == 0) {
+            value = computeInfo(stateId);
+            table[stateId] = value;
         }
-        return f;
+        return value;
     }
 
-    private byte computeFlags(int stateId) {
-        byte f = POPULATED;
+    private int computeInfo(int stateId) {
+        int value = POPULATED;
         try {
             StateType type = WrappedBlockState.getByGlobalId(serverVersion, stateId, false).getType();
-            if (isOreType(type)) f |= ORE;
-            if (isOccludingType(type)) f |= OCCLUDING;
+            if (isOreType(type)) {
+                value |= ORE;
+                Integer explicit = explicitReplacements.get(Config.normalize(type.getName()));
+                if (explicit != null) value |= (explicit + 1) << REPLACEMENT_SHIFT;
+            }
+            if (isOccludingType(type)) value |= OCCLUDING;
         } catch (Throwable ignored) {
         }
-        return f;
+        return value;
     }
 
     public boolean isOre(Material material) {
@@ -97,7 +143,9 @@ public class Compatibility {
     }
 
     public boolean isOccluding(Material material) {
-        return material != null && material.isOccluding();
+        if (material == null) return false;
+        Boolean byName = isOccludingName(Config.normalize(material.name()));
+        return byName != null ? byName : material.isOccluding();
     }
 
     private boolean isOreType(StateType type) {
@@ -107,8 +155,12 @@ public class Compatibility {
 
     private boolean isOccludingType(StateType type) {
         if (type == null || type.isAir()) return false;
-        String name = Config.normalize(type.getName());
+        Boolean byName = isOccludingName(Config.normalize(type.getName()));
+        return byName != null ? byName : type.isSolid() || type.isBlocking();
+    }
 
+    // Mesma regra para os blocos do pacote e do mundo; null = decide pelas propriedades do bloco
+    private static Boolean isOccludingName(String name) {
         if (name.contains("air") || name.equals("water") || name.equals("lava")
             || name.contains("glass") || name.contains("leaves") || name.contains("slab")
             || name.contains("stair") || name.contains("door") || name.contains("fence")
@@ -123,7 +175,7 @@ public class Compatibility {
             || name.contains("plant") || name.contains("sapling") || name.contains("candle")
             || name.contains("pot") || name.contains("hopper") || name.contains("lever")
             || name.contains("button") || name.contains("pressure_plate")) {
-            return false;
+            return Boolean.FALSE;
         }
 
         if (name.contains("ore") || name.contains("stone") || name.contains("deepslate")
@@ -134,9 +186,9 @@ public class Compatibility {
             || name.contains("bedrock") || name.contains("obsidian") || name.contains("tuff")
             || name.contains("granite") || name.contains("diorite") || name.contains("andesite")
             || name.contains("clay") || name.contains("mud") || name.contains("prismarine")) {
-            return true;
+            return Boolean.TRUE;
         }
 
-        return type.isSolid() || type.isBlocking();
+        return null;
     }
 }

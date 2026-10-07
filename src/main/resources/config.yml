@@ -7,7 +7,11 @@ worlds:
   - survival_nether
   - survival_spawn
 
+# Blocos escondidos de quem usa x-ray (textura ou hack).
+# "bloco" aparece como pedra/deepslate/netherrack/end stone (veja replacements).
+# "bloco=substituto" aparece como o substituto (ex.: air = some ate o jogador chegar perto).
 hidden-blocks:
+  # Minerios
   - DIAMOND_ORE
   - DEEPSLATE_DIAMOND_ORE
   - GOLD_ORE
@@ -27,6 +31,39 @@ hidden-blocks:
   - DEEPSLATE_COPPER_ORE
   - NETHER_QUARTZ_ORE
   - ANCIENT_DEBRIS
+  # Blocos de minerio (brutos dos veios e de armazenamento)
+  - RAW_IRON_BLOCK
+  - RAW_COPPER_BLOCK
+  - RAW_GOLD_BLOCK
+  - IRON_BLOCK
+  - GOLD_BLOCK
+  - DIAMOND_BLOCK
+  - EMERALD_BLOCK
+  - LAPIS_BLOCK
+  - REDSTONE_BLOCK
+  - NETHERITE_BLOCK
+  # Blocos infestados (silverfish): aparecem como o bloco normal, iguais visualmente
+  - INFESTED_STONE=STONE
+  - INFESTED_COBBLESTONE=COBBLESTONE
+  - INFESTED_STONE_BRICKS=STONE_BRICKS
+  - INFESTED_MOSSY_STONE_BRICKS=MOSSY_STONE_BRICKS
+  - INFESTED_CRACKED_STONE_BRICKS=CRACKED_STONE_BRICKS
+  - INFESTED_CHISELED_STONE_BRICKS=CHISELED_STONE_BRICKS
+  - INFESTED_DEEPSLATE=DEEPSLATE
+  # Dungeons e geradores de mobs
+  - SPAWNER=AIR
+  - TRIAL_SPAWNER=AIR
+  - VAULT=AIR
+  - MOSSY_COBBLESTONE
+  # Baus
+  - CHEST=AIR
+  - TRAPPED_CHEST=AIR
+  # Minas abandonadas: trilhos e teias
+  - RAIL=AIR
+  - POWERED_RAIL=AIR
+  - DETECTOR_RAIL=AIR
+  - ACTIVATOR_RAIL=AIR
+  - COBWEB=AIR
 
 replacements:
   normal: STONE
@@ -35,6 +72,13 @@ replacements:
   end: END_STONE
 
 reveal-distance: 2
+# Minerios expostos (em cavernas, agua, lava) ficam escondidos e so aparecem
+# quando o jogador chega a esta distancia em blocos. Bloqueia x-ray por textura
+# e por hack. 0 = desativa (minerios expostos sempre visiveis). Maximo: 64
+proximity-distance: 16
+# Blocos expostos so sao escondidos abaixo desta altura no overworld: trilhos, baus e
+# minerios da superficie continuam visiveis de longe. Nether e End nao tem limite.
+proximity-max-height: 64
 max-cache-size: 4096
 check-bypass: false
 debug: false

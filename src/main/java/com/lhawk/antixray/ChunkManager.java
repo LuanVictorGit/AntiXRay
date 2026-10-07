@@ -12,12 +12,15 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkUnloadEvent;
 import org.bukkit.event.world.WorldUnloadEvent;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 public class ChunkManager implements Listener {
 
@@ -27,6 +30,13 @@ public class ChunkManager implements Listener {
     private final AtomicLong chunksProcessed = new AtomicLong();
     private final AtomicLong chunksModified = new AtomicLong();
     private final AtomicLong oresHidden = new AtomicLong();
+
+    // Diagnostico para o /antixray status: o que chegou do PacketEvents e por que foi ignorado
+    private final LongAdder packetsSeen = new LongAdder();
+    private final LongAdder chunkPacketsSeen = new LongAdder();
+    private final LongAdder unknownPacketsSeen = new LongAdder();
+    private final LongAdder packetsReceived = new LongAdder();
+    private final Map<String, AtomicLong> skipped = new ConcurrentHashMap<String, AtomicLong>();
 
     // Bordas dos chunks ja enviados, separadas por mundo (as coordenadas se repetem entre mundos)
     private final Map<UUID, Map<Long, ChunkBorders>> borderCache = new ConcurrentHashMap<UUID, Map<Long, ChunkBorders>>();
@@ -38,6 +48,40 @@ public class ChunkManager implements Listener {
     public long getChunksProcessed() { return chunksProcessed.get(); }
     public long getChunksModified() { return chunksModified.get(); }
     public long getOresHidden() { return oresHidden.get(); }
+    public long getPacketsSeen() { return packetsSeen.sum(); }
+    public long getChunkPacketsSeen() { return chunkPacketsSeen.sum(); }
+    public long getUnknownPacketsSeen() { return unknownPacketsSeen.sum(); }
+    public long getPacketsReceived() { return packetsReceived.sum(); }
+
+    void countReceived() {
+        packetsReceived.increment();
+    }
+    public Map<String, AtomicLong> getSkipped() { return skipped; }
+
+    void countPacket(boolean chunk, boolean unknown) {
+        packetsSeen.increment();
+        if (chunk) chunkPacketsSeen.increment();
+        if (unknown) unknownPacketsSeen.increment();
+    }
+
+    void skip(String reason) {
+        skip(reason, null);
+    }
+
+    // Conta um chunk ignorado; cada motivo novo aparece uma vez no console (com o detalhe, se houver)
+    void skip(String reason, String detail) {
+        AtomicLong counter = skipped.get(reason);
+        if (counter == null) {
+            if (skipped.size() >= 32) return;
+            AtomicLong created = new AtomicLong();
+            counter = skipped.putIfAbsent(reason, created);
+            if (counter == null) {
+                counter = created;
+                plugin.getLogger().info("Chunk nao processado: " + reason + (detail != null ? " - " + detail : ""));
+            }
+        }
+        counter.incrementAndGet();
+    }
 
     public int getCachedChunkCount() {
         int count = 0;
@@ -49,7 +93,10 @@ public class ChunkManager implements Listener {
 
     public boolean processChunk(Player player, WrapperPlayServerChunkData wrapper) {
         Column column = wrapper.getColumn();
-        if (column == null) return false;
+        if (column == null) {
+            skip("pacote de chunk sem dados (PacketEvents nao conseguiu ler)");
+            return false;
+        }
         return processColumn(player, column.getX(), column.getZ(), column.getChunks());
     }
 
@@ -67,14 +114,21 @@ public class ChunkManager implements Listener {
     }
 
     private boolean processColumn(Player player, int chunkX, int chunkZ, BaseChunk[] sections) {
-        if (sections == null || sections.length == 0) return false;
-
         World world = player.getWorld();
+        if (sections == null || sections.length == 0) {
+            skip("chunk lido com 0 secoes no mundo " + Config.describeWorld(world) + " (altura do mundo errada no PacketEvents?)");
+            return false;
+        }
+
         World.Environment env = world.getEnvironment();
         int minSection = getMinHeight(world) >> 4;
         Map<Long, ChunkBorders> cache = getBorderCache(world);
         Compatibility compat = plugin.getCompatibility();
+        BlockManager blockManager = plugin.getBlockManager();
+        Config config = plugin.getConfiguration();
+        boolean proximity = config.getProximityDistance() > 0;
         ChunkBorders borders = new ChunkBorders(sections.length);
+        List<Long> exposedOres = null;
         boolean modified = false;
 
         for (int s = 0; s < sections.length; s++) {
@@ -91,12 +145,21 @@ public class ChunkManager implements Listener {
                         }
 
                         if (!compat.isOre(blockId)) continue;
-                        if (!isEnclosed(cache, sections, s, chunkX, chunkZ, x, y, z)) continue;
 
+                        int worldX = (chunkX << 4) + x;
                         int worldY = baseY + y;
-                        if (plugin.getBlockManager().isRevealed(player, (chunkX << 4) + x, worldY, (chunkZ << 4) + z)) continue;
+                        int worldZ = (chunkZ << 4) + z;
+                        if (blockManager.isRevealed(player, worldX, worldY, worldZ)) continue;
 
-                        section.set(x, y, z, compat.getReplacementId(worldY, env));
+                        // Minerio exposto (caverna, agua, lava) tambem e escondido: o x-ray veria
+                        // atraves das paredes. Ele e revelado quando o jogador chega perto.
+                        if (!isEnclosed(cache, sections, s, chunkX, chunkZ, x, y, z)) {
+                            if (!proximity || !config.hidesExposedAt(worldY, env)) continue;
+                            if (exposedOres == null) exposedOres = new ArrayList<Long>();
+                            exposedOres.add(BlockManager.pack(worldX, worldY, worldZ));
+                        }
+
+                        section.set(x, y, z, compat.getReplacementId(blockId, worldY, env));
                         modified = true;
                         oresHidden.incrementAndGet();
                     }
@@ -105,6 +168,7 @@ public class ChunkManager implements Listener {
         }
 
         cache.put(chunkKey(chunkX, chunkZ), borders);
+        blockManager.setHiddenOres(player, chunkX, chunkZ, exposedOres);
         chunksProcessed.incrementAndGet();
         if (modified) chunksModified.incrementAndGet();
         return modified;
@@ -158,7 +222,7 @@ public class ChunkManager implements Listener {
         }
     }
 
-    private static long chunkKey(int chunkX, int chunkZ) {
+    static long chunkKey(int chunkX, int chunkZ) {
         return (((long) chunkX) << 32) | (chunkZ & 0xFFFFFFFFL);
     }
 

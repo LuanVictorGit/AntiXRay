@@ -1,12 +1,17 @@
 package com.lhawk.antixray;
 
 import org.bukkit.ChatColor;
+import org.bukkit.World;
 import org.bukkit.configuration.file.FileConfiguration;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class Config {
 
@@ -15,11 +20,17 @@ public class Config {
     private volatile boolean enabled;
     private volatile Set<String> worlds = Collections.emptySet();
     private volatile Set<String> hiddenBlocks = Collections.emptySet();
+    // Substituto escolhido na lista ("bloco=substituto"); quem nao tem usa pedra/deepslate/netherrack/end stone
+    private volatile Map<String, String> hiddenReplacements = Collections.emptyMap();
+    // Resultado de isWorldProtected por mundo; limpo no reload
+    private final Map<UUID, Boolean> protectedWorlds = new ConcurrentHashMap<UUID, Boolean>();
     private String normalReplacement;
     private String deepslateReplacement;
     private String netherReplacement;
     private String endReplacement;
     private int revealDistance;
+    private volatile int proximityDistance;
+    private volatile int proximityMaxHeight;
     private int maxCacheSize;
     private volatile boolean checkBypass;
     private volatile boolean debug;
@@ -56,12 +67,20 @@ public class Config {
             newWorlds.add(w.toLowerCase(Locale.ROOT));
         }
         this.worlds = Collections.unmodifiableSet(newWorlds);
+        this.protectedWorlds.clear();
 
         Set<String> newHiddenBlocks = new HashSet<String>();
-        for (String h : c.getStringList("hidden-blocks")) {
-            newHiddenBlocks.add(normalize(h));
+        Map<String, String> newReplacements = new HashMap<String, String>();
+        for (String entry : c.getStringList("hidden-blocks")) {
+            int separator = entry.indexOf('=');
+            String block = normalize(separator >= 0 ? entry.substring(0, separator) : entry);
+            newHiddenBlocks.add(block);
+            if (separator >= 0) {
+                newReplacements.put(block, normalize(entry.substring(separator + 1)));
+            }
         }
         this.hiddenBlocks = Collections.unmodifiableSet(newHiddenBlocks);
+        this.hiddenReplacements = Collections.unmodifiableMap(newReplacements);
 
         this.normalReplacement = c.getString("replacements.normal", "STONE");
         this.deepslateReplacement = c.getString("replacements.deepslate", "DEEPSLATE");
@@ -69,6 +88,8 @@ public class Config {
         this.endReplacement = c.getString("replacements.end", "END_STONE");
 
         this.revealDistance = c.getInt("reveal-distance", 2);
+        this.proximityDistance = Math.max(0, Math.min(64, c.getInt("proximity-distance", 16)));
+        this.proximityMaxHeight = c.getInt("proximity-max-height", 64);
         this.maxCacheSize = c.getInt("max-cache-size", 4096);
         this.checkBypass = c.getBoolean("check-bypass", false);
         this.debug = c.getBoolean("debug", false);
@@ -107,18 +128,50 @@ public class Config {
     }
 
     public boolean isEnabled() { return enabled; }
-    public boolean isWorldProtected(String worldName) {
-        if (worldName == null) return true;
+    // Aceita o nome do mundo ("world"), a chave ("minecraft:overworld") ou so o nome da chave ("overworld"):
+    // no 26.x os mundos tambem sao identificados por chave
+    public boolean isWorldProtected(World world) {
+        if (world == null) return true;
+        Boolean cached = protectedWorlds.get(world.getUID());
+        if (cached != null) return cached;
+
         Set<String> worlds = this.worlds;
-        return worlds.isEmpty() || worlds.contains("*") || worlds.contains(worldName.toLowerCase(Locale.ROOT));
+        String key = getWorldKey(world);
+        boolean result = worlds.isEmpty() || worlds.contains("*")
+            || worlds.contains(world.getName().toLowerCase(Locale.ROOT))
+            || (key != null && (worlds.contains(key) || worlds.contains(key.substring(key.indexOf(':') + 1))));
+        protectedWorlds.put(world.getUID(), result);
+        return result;
+    }
+
+    // "minecraft:overworld", ou null em versoes sem World#getKey
+    static String getWorldKey(World world) {
+        try {
+            return world.getKey().toString().toLowerCase(Locale.ROOT);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    static String describeWorld(World world) {
+        String key = getWorldKey(world);
+        return key == null || key.equalsIgnoreCase(world.getName()) ? world.getName() : world.getName() + " (" + key + ")";
     }
     public Set<String> getWorlds() { return worlds; }
     public Set<String> getHiddenBlocks() { return hiddenBlocks; }
+    public Map<String, String> getHiddenReplacements() { return hiddenReplacements; }
     public String getNormalReplacement() { return normalReplacement; }
     public String getDeepslateReplacement() { return deepslateReplacement; }
     public String getNetherReplacement() { return netherReplacement; }
     public String getEndReplacement() { return endReplacement; }
     public int getRevealDistance() { return revealDistance; }
+    public int getProximityDistance() { return proximityDistance; }
+
+    // Blocos expostos (cavernas) so sao escondidos abaixo da altura limite no overworld:
+    // trilhos, baus e minerios da superficie continuam visiveis. Nether e End nao tem limite
+    public boolean hidesExposedAt(int y, World.Environment env) {
+        return env != World.Environment.NORMAL || y < proximityMaxHeight;
+    }
     public int getMaxCacheSize() { return maxCacheSize; }
     public boolean isCheckBypass() { return checkBypass; }
     public boolean isDebug() { return debug; }
