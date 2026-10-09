@@ -18,18 +18,13 @@ public class Compatibility {
     private static final int POPULATED = 1;
     private static final int ORE = 2;
     private static final int OCCLUDING = 4;
-    // Bits 8+ guardam o substituto escolhido na lista (ID global + 1); 0 = automatico
     private static final int REPLACEMENT_SHIFT = 8;
 
     private final AntiXray plugin;
-    // Os pacotes de saida usam os IDs da versao do servidor; o ViaVersion converte para o cliente depois
     private final ClientVersion serverVersion;
 
-    // Um unico array trocado por inteiro no reload: leitura sem lock e sem corrida entre tabelas
     private volatile int[] info = new int[65536];
-    // O mesmo por Material (ordinal): a linha de visao le muitos blocos do mundo
     private volatile int[] materialInfo = new int[Material.values().length];
-    // Substituto escolhido por nome de bloco ("infested_stone=stone", "rail=air")
     private volatile Map<String, Integer> explicitReplacements = Collections.emptyMap();
 
     private volatile int normalId;
@@ -44,20 +39,19 @@ public class Compatibility {
     }
 
     public void reload() {
-        Config c = plugin.getConfiguration();
-        int normal = stateId(c.getNormalReplacement(), StateTypes.STONE.createBlockState(serverVersion).getGlobalId());
-        this.normalId = normal;
-        this.deepslateId = stateId(c.getDeepslateReplacement(), normal);
-        this.netherId = stateId(c.getNetherReplacement(), normal);
-        this.endId = stateId(c.getEndReplacement(), normal);
+        int stone = StateTypes.STONE.createBlockState(serverVersion).getGlobalId();
+        this.normalId = stone;
+        this.deepslateId = stateId(StateTypes.DEEPSLATE, stone);
+        this.netherId = stateId(StateTypes.NETHERRACK, stone);
+        this.endId = stateId(StateTypes.END_STONE, stone);
 
         Map<String, Integer> explicit = new HashMap<String, Integer>();
-        for (Map.Entry<String, String> e : c.getHiddenReplacements().entrySet()) {
+        for (Map.Entry<String, String> e : plugin.getConfiguration().getHiddenReplacements().entrySet()) {
             int id = explicitStateId(e.getValue());
             if (id >= 0) {
                 explicit.put(e.getKey(), id);
             } else {
-                plugin.getLogger().warning("Substituto invalido para " + e.getKey() + ": " + e.getValue() + " (usando pedra)");
+                plugin.getLogger().warning("Unknown replacement for " + e.getKey() + ": " + e.getValue() + ", using stone instead");
             }
         }
         this.explicitReplacements = Collections.unmodifiableMap(explicit);
@@ -65,7 +59,6 @@ public class Compatibility {
         this.materialInfo = new int[Material.values().length];
     }
 
-    // Como stateId, mas aceita ar ("air" = ID 0). Devolve -1 se o bloco nao existir nesta versao
     private int explicitStateId(String name) {
         try {
             StateType type = StateTypes.getByName(name.trim().toLowerCase(Locale.ROOT));
@@ -78,18 +71,15 @@ public class Compatibility {
         }
     }
 
-    // Converte o bloco configurado no ID global; usa o fallback se nao existir nesta versao
-    private int stateId(String name, int fallback) {
+    private int stateId(StateType type, int fallback) {
         try {
-            StateType type = StateTypes.getByName(name.trim().toLowerCase(Locale.ROOT));
-            int id = type != null ? type.createBlockState(serverVersion).getGlobalId() : 0;
+            int id = type.createBlockState(serverVersion).getGlobalId();
             return id > 0 ? id : fallback;
         } catch (Throwable t) {
             return fallback;
         }
     }
 
-    // Bloco que aparece no lugar do bloco escondido: o escolhido na lista ou pedra/deepslate/netherrack/end stone
     public int getReplacementId(int stateId, int y, World.Environment env) {
         int explicit = (getInfo(stateId) >>> REPLACEMENT_SHIFT) - 1;
         return explicit >= 0 ? explicit : getReplacementId(y, env);
@@ -112,6 +102,14 @@ public class Compatibility {
 
     public boolean isOccluding(int stateId) {
         return (getInfo(stateId) & OCCLUDING) != 0;
+    }
+
+    public boolean isOre(Material material) {
+        return (getInfo(material) & ORE) != 0;
+    }
+
+    public boolean isOccluding(Material material) {
+        return (getInfo(material) & OCCLUDING) != 0;
     }
 
     private int getInfo(int stateId) {
@@ -139,14 +137,6 @@ public class Compatibility {
         } catch (Throwable ignored) {
         }
         return value;
-    }
-
-    public boolean isOre(Material material) {
-        return (getInfo(material) & ORE) != 0;
-    }
-
-    public boolean isOccluding(Material material) {
-        return (getInfo(material) & OCCLUDING) != 0;
     }
 
     private int getInfo(Material material) {
@@ -182,7 +172,6 @@ public class Compatibility {
         return byName != null ? byName : type.isSolid() || type.isBlocking();
     }
 
-    // Mesma regra para os blocos do pacote e do mundo; null = decide pelas propriedades do bloco
     private static Boolean isOccludingName(String name) {
         if (name.contains("air") || name.equals("water") || name.equals("lava")
             || name.contains("glass") || name.contains("leaves") || name.contains("slab")

@@ -2,24 +2,16 @@ name: AntiXray
 version: ${project.version}
 main: com.lhawk.antixray.AntiXray
 author: lHawk_
+description: Hides ores, structures and entities that players cannot see.
 depend: [packetevents]
 api-version: 1.13
 folia-supported: true
 commands:
   antixray:
-    description: Comando principal do AntiXray
+    description: AntiXray main command
+    usage: /antixray [reload|status]
     permission: antixray.admin
-    usage: /antixray [reload|status|debug]
 permissions:
   antixray.admin:
-    description: Permissao geral de administracao
-    default: op
-  antixray.bypass:
-    description: Ignora a protecao de ocultacao de minerios
-    default: false
-  antixray.reload:
-    description: Permissao para recarregar a configuracao
-    default: op
-  antixray.debug:
-    description: Permissao para alternar diagnosticos
+    description: Allows the /antixray commands
     default: op

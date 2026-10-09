@@ -20,7 +20,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.LongAdder;
 
 public class ChunkManager implements Listener {
 
@@ -29,16 +28,7 @@ public class ChunkManager implements Listener {
     private final AntiXray plugin;
     private final AtomicLong chunksProcessed = new AtomicLong();
     private final AtomicLong chunksModified = new AtomicLong();
-    private final AtomicLong oresHidden = new AtomicLong();
-
-    // Diagnostico para o /antixray status: o que chegou do PacketEvents e por que foi ignorado
-    private final LongAdder packetsSeen = new LongAdder();
-    private final LongAdder chunkPacketsSeen = new LongAdder();
-    private final LongAdder unknownPacketsSeen = new LongAdder();
-    private final LongAdder packetsReceived = new LongAdder();
-    private final Map<String, AtomicLong> skipped = new ConcurrentHashMap<String, AtomicLong>();
-
-    // Bordas dos chunks ja enviados, separadas por mundo (as coordenadas se repetem entre mundos)
+    private final AtomicLong blocksHidden = new AtomicLong();
     private final Map<UUID, Map<Long, ChunkBorders>> borderCache = new ConcurrentHashMap<UUID, Map<Long, ChunkBorders>>();
 
     public ChunkManager(AntiXray plugin) {
@@ -47,56 +37,11 @@ public class ChunkManager implements Listener {
 
     public long getChunksProcessed() { return chunksProcessed.get(); }
     public long getChunksModified() { return chunksModified.get(); }
-    public long getOresHidden() { return oresHidden.get(); }
-    public long getPacketsSeen() { return packetsSeen.sum(); }
-    public long getChunkPacketsSeen() { return chunkPacketsSeen.sum(); }
-    public long getUnknownPacketsSeen() { return unknownPacketsSeen.sum(); }
-    public long getPacketsReceived() { return packetsReceived.sum(); }
-
-    void countReceived() {
-        packetsReceived.increment();
-    }
-    public Map<String, AtomicLong> getSkipped() { return skipped; }
-
-    void countPacket(boolean chunk, boolean unknown) {
-        packetsSeen.increment();
-        if (chunk) chunkPacketsSeen.increment();
-        if (unknown) unknownPacketsSeen.increment();
-    }
-
-    void skip(String reason) {
-        skip(reason, null);
-    }
-
-    // Conta um chunk ignorado; cada motivo novo aparece uma vez no console (com o detalhe, se houver)
-    void skip(String reason, String detail) {
-        AtomicLong counter = skipped.get(reason);
-        if (counter == null) {
-            if (skipped.size() >= 32) return;
-            AtomicLong created = new AtomicLong();
-            counter = skipped.putIfAbsent(reason, created);
-            if (counter == null) {
-                counter = created;
-                plugin.getLogger().info("Chunk nao processado: " + reason + (detail != null ? " - " + detail : ""));
-            }
-        }
-        counter.incrementAndGet();
-    }
-
-    public int getCachedChunkCount() {
-        int count = 0;
-        for (Map<Long, ChunkBorders> cache : borderCache.values()) {
-            count += cache.size();
-        }
-        return count;
-    }
+    public long getBlocksHidden() { return blocksHidden.get(); }
 
     public boolean processChunk(Player player, WrapperPlayServerChunkData wrapper) {
         Column column = wrapper.getColumn();
-        if (column == null) {
-            skip("pacote de chunk sem dados (PacketEvents nao conseguiu ler)");
-            return false;
-        }
+        if (column == null) return false;
         return processColumn(player, column.getX(), column.getZ(), column.getChunks());
     }
 
@@ -114,19 +59,14 @@ public class ChunkManager implements Listener {
     }
 
     private boolean processColumn(Player player, int chunkX, int chunkZ, BaseChunk[] sections) {
-        World world = player.getWorld();
-        if (sections == null || sections.length == 0) {
-            skip("chunk lido com 0 secoes no mundo " + Config.describeWorld(world) + " (altura do mundo errada no PacketEvents?)");
-            return false;
-        }
+        if (sections == null || sections.length == 0) return false;
 
+        World world = player.getWorld();
         World.Environment env = world.getEnvironment();
         int minSection = getMinHeight(world) >> 4;
         Map<Long, ChunkBorders> cache = getBorderCache(world);
         Compatibility compat = plugin.getCompatibility();
-        BlockManager blockManager = plugin.getBlockManager();
-        Config config = plugin.getConfiguration();
-        boolean proximity = config.getProximityDistance() > 0;
+        boolean proximity = plugin.getConfiguration().getProximityDistance() > 0;
         ChunkBorders borders = new ChunkBorders(sections.length);
         List<Long> exposedOres = null;
         boolean modified = false;
@@ -149,9 +89,6 @@ public class ChunkManager implements Listener {
                         int worldX = (chunkX << 4) + x;
                         int worldY = baseY + y;
                         int worldZ = (chunkZ << 4) + z;
-
-                        // Bloco exposto (caverna, agua, lava) tambem e escondido: o x-ray veria atraves
-                        // das paredes. Ele aparece enquanto estiver na linha de visao do jogador
                         if (!isEnclosed(cache, sections, s, chunkX, chunkZ, x, y, z)) {
                             if (!proximity) continue;
                             if (exposedOres == null) exposedOres = new ArrayList<Long>();
@@ -160,20 +97,19 @@ public class ChunkManager implements Listener {
 
                         section.set(x, y, z, compat.getReplacementId(blockId, worldY, env));
                         modified = true;
-                        oresHidden.incrementAndGet();
+                        blocksHidden.incrementAndGet();
                     }
                 }
             }
         }
 
         cache.put(chunkKey(chunkX, chunkZ), borders);
-        blockManager.setHiddenOres(player, chunkX, chunkZ, exposedOres);
+        plugin.getBlockManager().setHiddenOres(player, chunkX, chunkZ, exposedOres);
         chunksProcessed.incrementAndGet();
         if (modified) chunksModified.incrementAndGet();
         return modified;
     }
 
-    // true se as 6 faces do bloco estao cobertas por blocos opacos
     private boolean isEnclosed(Map<Long, ChunkBorders> cache, BaseChunk[] sections, int s, int chunkX, int chunkZ, int x, int y, int z) {
         Compatibility c = plugin.getCompatibility();
         BaseChunk section = sections[s];
@@ -185,7 +121,6 @@ public class ChunkManager implements Listener {
             && (y > 0 ? c.isOccluding(section.getBlockId(x, y - 1, z)) : s == 0 || isOccluding(sections, s - 1, x, 15, z));
     }
 
-    // Secao acima do topo, ausente ou vazia conta como ar
     private boolean isOccluding(BaseChunk[] sections, int s, int x, int y, int z) {
         if (s >= sections.length) return false;
         BaseChunk section = sections[s];
@@ -194,7 +129,6 @@ public class ChunkManager implements Listener {
 
     private boolean isNeighborOccluding(Map<Long, ChunkBorders> cache, int chunkX, int chunkZ, int s, int x, int y, int z) {
         ChunkBorders borders = cache.get(chunkKey(chunkX, chunkZ));
-        // Vizinho ainda nao enviado: considera opaco para nao revelar o minerio
         return borders == null || borders.isOccluding(s, x, y, z);
     }
 
@@ -217,7 +151,7 @@ public class ChunkManager implements Listener {
         try {
             return world.getMinHeight();
         } catch (Throwable t) {
-            return 0; // versoes anteriores a 1.17
+            return 0;
         }
     }
 
@@ -238,12 +172,11 @@ public class ChunkManager implements Listener {
         borderCache.remove(event.getWorld().getUID());
     }
 
-    // Quais blocos das 4 faces laterais do chunk sao opacos: 16x16 bits por secao em cada face
     private static class ChunkBorders {
-        private final long[] west;  // x == 0, indexado por z
-        private final long[] east;  // x == 15, indexado por z
-        private final long[] north; // z == 0, indexado por x
-        private final long[] south; // z == 15, indexado por x
+        private final long[] west;
+        private final long[] east;
+        private final long[] north;
+        private final long[] south;
 
         ChunkBorders(int sectionCount) {
             this.west = new long[sectionCount * 4];

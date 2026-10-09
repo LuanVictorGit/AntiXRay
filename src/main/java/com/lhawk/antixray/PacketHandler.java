@@ -2,7 +2,6 @@ package com.lhawk.antixray;
 
 import com.github.retrooper.packetevents.event.PacketListenerAbstract;
 import com.github.retrooper.packetevents.event.PacketListenerPriority;
-import com.github.retrooper.packetevents.event.PacketReceiveEvent;
 import com.github.retrooper.packetevents.event.PacketSendEvent;
 import com.github.retrooper.packetevents.protocol.packettype.PacketType;
 import com.github.retrooper.packetevents.protocol.packettype.PacketTypeCommon;
@@ -20,7 +19,6 @@ import org.bukkit.entity.Player;
 
 import java.util.logging.Level;
 
-// Roda nas threads do Netty: so usa os dados do pacote e caches thread-safe, nunca le blocos do mundo (seguro no Folia)
 public class PacketHandler extends PacketListenerAbstract {
 
     private final AntiXray plugin;
@@ -32,17 +30,9 @@ public class PacketHandler extends PacketListenerAbstract {
     }
 
     @Override
-    public void onPacketReceive(PacketReceiveEvent event) {
-        plugin.getChunkManager().countReceived();
-    }
-
-    @Override
     public void onPacketSend(PacketSendEvent event) {
-        if (!plugin.getConfiguration().isEnabled()) return;
-
         PacketTypeCommon type = event.getPacketType();
         boolean chunk = type == PacketType.Play.Server.CHUNK_DATA || type == PacketType.Play.Server.MAP_CHUNK_BULK;
-        plugin.getChunkManager().countPacket(chunk, type == null);
         if (!chunk
             && type != PacketType.Play.Server.BLOCK_CHANGE
             && type != PacketType.Play.Server.MULTI_BLOCK_CHANGE
@@ -52,27 +42,16 @@ public class PacketHandler extends PacketListenerAbstract {
 
         try {
             Player player = findPlayer(event);
-            if (player == null) {
-                if (chunk) plugin.getChunkManager().skip("jogador do pacote nao encontrado", describeUser(event.getUser()));
-                return;
-            }
+            if (player == null) return;
 
             if (type == PacketType.Play.Server.UNLOAD_CHUNK) {
-                // Chunk saiu da tela do jogador: os minerios pendentes dele nao interessam mais
                 WrapperPlayServerUnloadChunk wrapper = new WrapperPlayServerUnloadChunk(event);
                 plugin.getBlockManager().forgetChunk(player, wrapper.getChunkX(), wrapper.getChunkZ());
                 return;
             }
 
             World world = player.getWorld();
-            if (!plugin.getConfiguration().isWorldProtected(world)) {
-                if (chunk) plugin.getChunkManager().skip("mundo " + Config.describeWorld(world) + " fora da lista 'worlds'");
-                return;
-            }
-            if (plugin.getConfiguration().isCheckBypass() && player.hasPermission("antixray.bypass")) {
-                if (chunk) plugin.getChunkManager().skip("jogador com antixray.bypass (check-bypass: true)");
-                return;
-            }
+            if (!plugin.getConfiguration().isWorldProtected(world)) return;
 
             if (type == PacketType.Play.Server.CHUNK_DATA) {
                 if (plugin.getChunkManager().processChunk(player, new WrapperPlayServerChunkData(event))) {
@@ -105,17 +84,13 @@ public class PacketHandler extends PacketListenerAbstract {
                 }
             }
         } catch (Throwable t) {
-            if (chunk) plugin.getChunkManager().skip("erro ao ler/processar o chunk: " + t.getClass().getSimpleName(), String.valueOf(t.getMessage()));
-            // O primeiro erro sempre aparece no console; os seguintes so com debug ativo
-            if (!errorLogged || plugin.getConfiguration().isDebug()) {
+            if (!errorLogged) {
                 errorLogged = true;
-                plugin.getLogger().log(Level.WARNING, "Erro ao processar pacote " + type.getName()
-                    + " (os proximos so aparecem com debug ativo)", t);
+                plugin.getLogger().log(Level.WARNING, "Could not process packet " + type.getName(), t);
             }
         }
     }
 
-    // O PacketEvents liga o jogador ao canal no login; se isso falhar, procura pelo UUID e pelo nome
     private static Player findPlayer(PacketSendEvent event) {
         Object platformPlayer = event.getPlayer();
         if (platformPlayer instanceof Player) return (Player) platformPlayer;
@@ -129,13 +104,6 @@ public class PacketHandler extends PacketListenerAbstract {
         return player;
     }
 
-    private static String describeUser(User user) {
-        if (user == null) return "sem usuario";
-        return "nome=" + user.getName() + ", uuid=" + user.getUUID();
-    }
-
-    // Bloco escondido que o jogador nao esta vendo agora. Outro bloco no lugar (minerado, trocado):
-    // o que ele via ali deixa de valer
     private boolean shouldHide(Player player, int blockId, int x, int y, int z) {
         if (!plugin.getCompatibility().isOre(blockId)) {
             plugin.getBlockManager().unmarkRevealed(player.getUniqueId(), x, y, z);
@@ -144,7 +112,6 @@ public class PacketHandler extends PacketListenerAbstract {
         return !plugin.getBlockManager().isRevealed(player, x, y, z);
     }
 
-    // Devolve o bloco que substitui o escondido; ele passa a ser vigiado e aparece quando estiver na visao do jogador
     private int hide(Player player, World world, int blockId, int x, int y, int z) {
         if (plugin.getConfiguration().getProximityDistance() > 0) {
             plugin.getBlockManager().addHiddenOre(player, x, y, z);
