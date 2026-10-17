@@ -8,10 +8,13 @@ import com.github.retrooper.packetevents.protocol.world.states.type.StateTypes;
 import org.bukkit.Material;
 import org.bukkit.World;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 public class Compatibility {
 
@@ -19,6 +22,12 @@ public class Compatibility {
     private static final int ORE = 2;
     private static final int OCCLUDING = 4;
     private static final int REPLACEMENT_SHIFT = 8;
+
+    // Full opaque cubes whose names contain a keyword from the transparent list below (e.g. "piston", "bar" in barrel).
+    private static final Set<String> OPAQUE_NAMES = new HashSet<String>(Arrays.asList(
+        "piston", "sticky_piston", "barrel", "shroomlight", "red_mushroom_block", "brown_mushroom_block",
+        "mushroom_stem", "amethyst_block", "budding_amethyst", "dripstone_block", "packed_ice", "blue_ice",
+        "chain_command_block"));
 
     private final AntiXray plugin;
     private final ClientVersion serverVersion;
@@ -173,6 +182,7 @@ public class Compatibility {
     }
 
     private static Boolean isOccludingName(String name) {
+        if (OPAQUE_NAMES.contains(name)) return Boolean.TRUE;
         if (name.contains("air") || name.equals("water") || name.equals("lava")
             || name.contains("glass") || name.contains("leaves") || name.contains("slab")
             || name.contains("stair") || name.contains("door") || name.contains("fence")
