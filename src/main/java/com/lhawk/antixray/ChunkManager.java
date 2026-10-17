@@ -25,6 +25,13 @@ public class ChunkManager implements Listener {
 
     private static final int MAX_CACHED_CHUNKS = 2048;
 
+    private static final int BLOCKED = 0;
+    private static final int OPEN = 1;
+    private static final int UNKNOWN = 2;
+
+    private static final int ENCLOSED = 0;
+    private static final int EXPOSED = 1;
+
     private final AntiXray plugin;
     private final AtomicLong chunksProcessed = new AtomicLong();
     private final AtomicLong chunksModified = new AtomicLong();
@@ -89,8 +96,9 @@ public class ChunkManager implements Listener {
                         int worldX = (chunkX << 4) + x;
                         int worldY = baseY + y;
                         int worldZ = (chunkZ << 4) + z;
-                        if (!isEnclosed(cache, sections, s, chunkX, chunkZ, x, y, z)) {
-                            if (!proximity) continue;
+                        int state = enclosure(cache, sections, s, chunkX, chunkZ, x, y, z);
+                        if (state == EXPOSED && !proximity) continue;
+                        if (proximity && state != ENCLOSED) {
                             if (exposedOres == null) exposedOres = new ArrayList<Long>();
                             exposedOres.add(BlockManager.pack(worldX, worldY, worldZ));
                         }
@@ -110,26 +118,49 @@ public class ChunkManager implements Listener {
         return modified;
     }
 
-    private boolean isEnclosed(Map<Long, ChunkBorders> cache, BaseChunk[] sections, int s, int chunkX, int chunkZ, int x, int y, int z) {
+    /**
+     * Classifies an ore by its six faces. An ore is ENCLOSED when every face is solid,
+     * EXPOSED when one face opens onto a non-solid block, and UNKNOWN when no face is open
+     * but a face points into a neighbouring chunk that has not been received yet.
+     */
+    private int enclosure(Map<Long, ChunkBorders> cache, BaseChunk[] sections, int s, int chunkX, int chunkZ, int x, int y, int z) {
+        boolean unknown = false;
+        for (int dir = 0; dir < 6; dir++) {
+            int face = face(cache, sections, s, chunkX, chunkZ, x, y, z, dir);
+            if (face == OPEN) return EXPOSED;
+            if (face == UNKNOWN) unknown = true;
+        }
+        return unknown ? UNKNOWN : ENCLOSED;
+    }
+
+    private int face(Map<Long, ChunkBorders> cache, BaseChunk[] sections, int s, int chunkX, int chunkZ, int x, int y, int z, int dir) {
         Compatibility c = plugin.getCompatibility();
         BaseChunk section = sections[s];
-        return (x < 15 ? c.isOccluding(section.getBlockId(x + 1, y, z)) : isNeighborOccluding(cache, chunkX + 1, chunkZ, s, 0, y, z))
-            && (x > 0 ? c.isOccluding(section.getBlockId(x - 1, y, z)) : isNeighborOccluding(cache, chunkX - 1, chunkZ, s, 15, y, z))
-            && (z < 15 ? c.isOccluding(section.getBlockId(x, y, z + 1)) : isNeighborOccluding(cache, chunkX, chunkZ + 1, s, x, y, 0))
-            && (z > 0 ? c.isOccluding(section.getBlockId(x, y, z - 1)) : isNeighborOccluding(cache, chunkX, chunkZ - 1, s, x, y, 15))
-            && (y < 15 ? c.isOccluding(section.getBlockId(x, y + 1, z)) : isOccluding(sections, s + 1, x, 0, z))
-            && (y > 0 ? c.isOccluding(section.getBlockId(x, y - 1, z)) : s == 0 || isOccluding(sections, s - 1, x, 15, z));
+        switch (dir) {
+            case 0: return x < 15 ? faceOf(c, section.getBlockId(x + 1, y, z)) : neighborFace(cache, chunkX + 1, chunkZ, s, 0, y, z);
+            case 1: return x > 0 ? faceOf(c, section.getBlockId(x - 1, y, z)) : neighborFace(cache, chunkX - 1, chunkZ, s, 15, y, z);
+            case 2: return z < 15 ? faceOf(c, section.getBlockId(x, y, z + 1)) : neighborFace(cache, chunkX, chunkZ + 1, s, x, y, 0);
+            case 3: return z > 0 ? faceOf(c, section.getBlockId(x, y, z - 1)) : neighborFace(cache, chunkX, chunkZ - 1, s, x, y, 15);
+            case 4: return y < 15 ? faceOf(c, section.getBlockId(x, y + 1, z)) : sectionFace(c, sections, s + 1, x, 0, z);
+            default: return y > 0 ? faceOf(c, section.getBlockId(x, y - 1, z)) : (s == 0 ? BLOCKED : sectionFace(c, sections, s - 1, x, 15, z));
+        }
     }
 
-    private boolean isOccluding(BaseChunk[] sections, int s, int x, int y, int z) {
-        if (s >= sections.length) return false;
+    private static int faceOf(Compatibility c, int blockId) {
+        return c.isOccluding(blockId) ? BLOCKED : OPEN;
+    }
+
+    private static int sectionFace(Compatibility c, BaseChunk[] sections, int s, int x, int y, int z) {
+        if (s >= sections.length) return OPEN;
         BaseChunk section = sections[s];
-        return section != null && !section.isEmpty() && plugin.getCompatibility().isOccluding(section.getBlockId(x, y, z));
+        if (section == null || section.isEmpty()) return OPEN;
+        return faceOf(c, section.getBlockId(x, y, z));
     }
 
-    private boolean isNeighborOccluding(Map<Long, ChunkBorders> cache, int chunkX, int chunkZ, int s, int x, int y, int z) {
+    private int neighborFace(Map<Long, ChunkBorders> cache, int chunkX, int chunkZ, int s, int x, int y, int z) {
         ChunkBorders borders = cache.get(chunkKey(chunkX, chunkZ));
-        return borders == null || borders.isOccluding(s, x, y, z);
+        if (borders == null) return UNKNOWN;
+        return borders.isOccluding(s, x, y, z) ? BLOCKED : OPEN;
     }
 
     private Map<Long, ChunkBorders> getBorderCache(World world) {

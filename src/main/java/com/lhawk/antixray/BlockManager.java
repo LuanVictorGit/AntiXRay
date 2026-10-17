@@ -212,9 +212,9 @@ public class BlockManager implements Listener {
                         chunk.revealed.remove(pos);
                     }
                 }
-                if (chunk.hidden.isEmpty()) {
-                    data.chunks.remove(key, chunk);
-                }
+                // Empty chunk entries are kept on purpose. Removing them here races with addHiddenOre
+                // on the packet thread, which could add an ore to a ChunkOres that is already detached.
+                // Entries are dropped by forgetChunk on UNLOAD_CHUNK and by clearPlayerCache.
             }
         }
     }
