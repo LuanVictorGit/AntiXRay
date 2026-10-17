@@ -32,6 +32,10 @@ final class EntityHider implements Listener {
 
     private static final long CHECK_TICKS = 2;
     private static final int HIDE_AFTER_MISSES = 2;
+    private static final double MOTION_THRESHOLD_SQ = 0.0225;
+    private static final int STATIONARY_VISIBLE_INTERVAL = 10;
+    private static final int STATIONARY_HIDDEN_INTERVAL = 6;
+    private static final double FAR_DISTANCE_SQ = 36.0 * 36.0;
 
     private final AntiXray plugin;
     private final Map<UUID, Viewer> viewers = new ConcurrentHashMap<UUID, Viewer>();
@@ -134,7 +138,8 @@ final class EntityHider implements Listener {
                 tracked = new Tracked(entity);
                 viewer.entities.put(entity.getEntityId(), tracked);
             }
-            boolean show = tracked.forced != null ? tracked.forced : shouldShow(player, entity, null);
+            Location eye = player.getEyeLocation();
+            boolean show = tracked.forced != null ? tracked.forced : shouldShow(player, entity, eye.getX(), eye.getY(), eye.getZ(), null, tracked);
             tracked.shown = show;
             tracked.tracking = true;
             tracked.misses = 0;
@@ -162,7 +167,14 @@ final class EntityHider implements Listener {
     private void check(Viewer viewer) {
         if (disabled || viewer.entities.isEmpty()) return;
         Player player = viewer.player;
-        Sight sight = new Sight(player.getWorld(), plugin.getCompatibility());
+        if (!player.isOnline()) return;
+
+        Location eye = player.getEyeLocation();
+        double eyeX = eye.getX();
+        double eyeY = eye.getY();
+        double eyeZ = eye.getZ();
+        Sight sight = null;
+
         for (Tracked tracked : viewer.entities.values()) {
             Entity entity = tracked.entity;
             if (!entity.isValid() || entity.getWorld() != player.getWorld()) {
@@ -171,7 +183,11 @@ final class EntityHider implements Listener {
             }
             if (!isOwned(entity)) continue;
 
-            if (shouldShow(player, entity, sight)) {
+            if (sight == null) {
+                sight = new Sight(player.getWorld(), plugin.getCompatibility());
+            }
+
+            if (shouldShow(player, entity, eyeX, eyeY, eyeZ, sight, tracked)) {
                 tracked.misses = 0;
                 if (!tracked.shown) resync(viewer, tracked, true);
             } else if (tracked.shown && ++tracked.misses >= HIDE_AFTER_MISSES) {
@@ -184,34 +200,91 @@ final class EntityHider implements Listener {
         return (entity instanceof LivingEntity && !(entity instanceof ArmorStand)) || entity instanceof Minecart;
     }
 
-    private boolean shouldShow(Player player, Entity entity, Sight sight) {
+    private boolean shouldShow(Player player, Entity entity, double eyeX, double eyeY, double eyeZ, Sight sight, Tracked tracked) {
         if (player.getGameMode() == GameMode.SPECTATOR || entity.isGlowing()) return true;
         if (!plugin.getConfiguration().isWorldProtected(player.getWorld())) return true;
         if (entity.equals(player.getVehicle()) || entity.getPassengers().contains(player) || player.getPassengers().contains(entity)) {
             return true;
         }
 
-        if (sight == null) sight = new Sight(player.getWorld(), plugin.getCompatibility());
-        Location eye = player.getEyeLocation();
-        double ex = eye.getX();
-        double ey = eye.getY();
-        double ez = eye.getZ();
         BoundingBox box = entity.getBoundingBox();
         double cx = box.getCenterX();
         double cy = box.getCenterY();
         double cz = box.getCenterZ();
-        if (sight.canSee(ex, ey, ez, cx, cy, cz)) return true;
+
+        double dx = cx - eyeX;
+        double dy = cy - eyeY;
+        double dz = cz - eyeZ;
+        double distSq = dx * dx + dy * dy + dz * dz;
+        if (distSq <= 2.25) return true;
+
+        double pMoveSq = (eyeX - tracked.lastPlayerX) * (eyeX - tracked.lastPlayerX)
+            + (eyeY - tracked.lastPlayerY) * (eyeY - tracked.lastPlayerY)
+            + (eyeZ - tracked.lastPlayerZ) * (eyeZ - tracked.lastPlayerZ);
+        double eMoveSq = (cx - tracked.lastEntityX) * (cx - tracked.lastEntityX)
+            + (cy - tracked.lastEntityY) * (cy - tracked.lastEntityY)
+            + (cz - tracked.lastEntityZ) * (cz - tracked.lastEntityZ);
+
+        boolean moved = pMoveSq > MOTION_THRESHOLD_SQ || eMoveSq > MOTION_THRESHOLD_SQ;
+        if (!moved) {
+            tracked.checkCounter++;
+            int maxInterval = tracked.lastVisible ? STATIONARY_VISIBLE_INTERVAL : STATIONARY_HIDDEN_INTERVAL;
+            if (tracked.checkCounter < maxInterval) {
+                return tracked.lastVisible;
+            }
+        } else if (distSq > FAR_DISTANCE_SQ) {
+            tracked.checkCounter++;
+            if ((tracked.checkCounter & 1) != 0) {
+                return tracked.lastVisible;
+            }
+        }
+
+        if (sight == null) {
+            sight = new Sight(player.getWorld(), plugin.getCompatibility());
+        }
+
+        if (sight.canSee(eyeX, eyeY, eyeZ, cx, cy, cz)) {
+            updateTracked(tracked, eyeX, eyeY, eyeZ, cx, cy, cz, true);
+            return true;
+        }
 
         double rx = box.getWidthX() * 0.4;
         double ry = box.getHeight() * 0.45;
         double rz = box.getWidthZ() * 0.4;
+
+        if (sight.canSee(eyeX, eyeY, eyeZ, cx, cy + ry * 0.8, cz)) {
+            updateTracked(tracked, eyeX, eyeY, eyeZ, cx, cy, cz, true);
+            return true;
+        }
+
+        if (sight.canSee(eyeX, eyeY, eyeZ, cx, cy - ry * 0.8, cz)) {
+            updateTracked(tracked, eyeX, eyeY, eyeZ, cx, cy, cz, true);
+            return true;
+        }
+
         for (int corner = 0; corner < 8; corner++) {
             double x = cx + ((corner & 1) == 0 ? -rx : rx);
             double y = cy + ((corner & 2) == 0 ? -ry : ry);
             double z = cz + ((corner & 4) == 0 ? -rz : rz);
-            if (sight.canSee(ex, ey, ez, x, y, z)) return true;
+            if (sight.canSee(eyeX, eyeY, eyeZ, x, y, z)) {
+                updateTracked(tracked, eyeX, eyeY, eyeZ, cx, cy, cz, true);
+                return true;
+            }
         }
+
+        updateTracked(tracked, eyeX, eyeY, eyeZ, cx, cy, cz, false);
         return false;
+    }
+
+    private void updateTracked(Tracked tracked, double px, double py, double pz, double ex, double ey, double ez, boolean visible) {
+        tracked.lastPlayerX = px;
+        tracked.lastPlayerY = py;
+        tracked.lastPlayerZ = pz;
+        tracked.lastEntityX = ex;
+        tracked.lastEntityY = ey;
+        tracked.lastEntityZ = ez;
+        tracked.lastVisible = visible;
+        tracked.checkCounter = 0;
     }
 
     private void resync(Viewer viewer, Tracked tracked, boolean show) {
@@ -289,6 +362,10 @@ final class EntityHider implements Listener {
         volatile boolean tracking;
         volatile Boolean forced;
         int misses;
+        double lastPlayerX, lastPlayerY, lastPlayerZ;
+        double lastEntityX, lastEntityY, lastEntityZ;
+        int checkCounter;
+        boolean lastVisible = true;
 
         Tracked(Entity entity) {
             this.entity = entity;

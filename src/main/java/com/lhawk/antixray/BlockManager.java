@@ -23,20 +23,19 @@ import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
 
-import java.util.Arrays;
-import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 public class BlockManager implements Listener {
 
     private static final long CHECK_INTERVAL_MS = 250;
-    private static final long CHECKED = Long.MIN_VALUE;
     private static final int HIDE_MARGIN = 16;
 
     private final AntiXray plugin;
@@ -68,27 +67,24 @@ public class BlockManager implements Listener {
     public boolean isRevealed(Player player, int x, int y, int z) {
         if (player == null) return false;
         PlayerData data = players.get(player.getUniqueId());
-        return data != null && data.isRevealed(ChunkManager.chunkKey(x >> 4, z >> 4), pack(x, y, z));
+        if (data == null) return false;
+        ChunkOres chunk = data.chunks.get(ChunkManager.chunkKey(x >> 4, z >> 4));
+        return chunk != null && chunk.revealed.contains(pack(x, y, z));
     }
 
     public void markRevealed(UUID uuid, int x, int y, int z) {
         PlayerData data = getData(uuid);
         long key = ChunkManager.chunkKey(x >> 4, z >> 4);
-        Set<Long> chunk = data.revealed.get(key);
-        if (chunk == null) {
-            chunk = Collections.newSetFromMap(new ConcurrentHashMap<Long, Boolean>());
-            Set<Long> existing = data.revealed.putIfAbsent(key, chunk);
-            if (existing != null) chunk = existing;
-        }
-        chunk.add(pack(x, y, z));
+        ChunkOres chunk = data.chunks.computeIfAbsent(key, k -> new ChunkOres());
+        chunk.revealed.add(pack(x, y, z));
     }
 
     public void unmarkRevealed(UUID uuid, int x, int y, int z) {
         PlayerData data = players.get(uuid);
         if (data == null) return;
-        Set<Long> chunk = data.revealed.get(ChunkManager.chunkKey(x >> 4, z >> 4));
+        ChunkOres chunk = data.chunks.get(ChunkManager.chunkKey(x >> 4, z >> 4));
         if (chunk != null) {
-            chunk.remove(pack(x, y, z));
+            chunk.revealed.remove(pack(x, y, z));
         }
     }
 
@@ -98,42 +94,27 @@ public class BlockManager implements Listener {
             forgetChunk(player, chunkX, chunkZ);
             return;
         }
-        long[] ores = new long[positions.size()];
-        for (int i = 0; i < ores.length; i++) {
-            ores[i] = positions.get(i);
-        }
         PlayerData data = getData(player.getUniqueId());
-        synchronized (data) {
-            data.hiddenOres.put(key, ores);
-            data.revealed.remove(key);
-            data.version++;
-        }
+        ChunkOres chunk = new ChunkOres();
+        chunk.hidden.addAll(positions);
+        data.chunks.put(key, chunk);
+        data.version.incrementAndGet();
     }
 
     public void addHiddenOre(Player player, int x, int y, int z) {
         PlayerData data = getData(player.getUniqueId());
         long key = ChunkManager.chunkKey(x >> 4, z >> 4);
         long pos = pack(x, y, z);
-        synchronized (data) {
-            long[] old = data.hiddenOres.get(key);
-            if (old != null) {
-                for (long existing : old) {
-                    if (existing == pos) return;
-                }
-            }
-            long[] ores = old == null ? new long[1] : Arrays.copyOf(old, old.length + 1);
-            ores[ores.length - 1] = pos;
-            data.hiddenOres.put(key, ores);
-            data.version++;
+        ChunkOres chunk = data.chunks.computeIfAbsent(key, k -> new ChunkOres());
+        if (chunk.hidden.add(pos)) {
+            data.version.incrementAndGet();
         }
     }
 
     public void forgetChunk(Player player, int chunkX, int chunkZ) {
         PlayerData data = players.get(player.getUniqueId());
         if (data != null) {
-            long key = ChunkManager.chunkKey(chunkX, chunkZ);
-            data.hiddenOres.remove(key);
-            data.revealed.remove(key);
+            data.chunks.remove(ChunkManager.chunkKey(chunkX, chunkZ));
         }
     }
 
@@ -198,28 +179,26 @@ public class BlockManager implements Listener {
         for (int cx = (px - range) >> 4; cx <= (px + range) >> 4; cx++) {
             for (int cz = (pz - range) >> 4; cz <= (pz + range) >> 4; cz++) {
                 long key = ChunkManager.chunkKey(cx, cz);
-                long[] ores = data.hiddenOres.get(key);
-                if (ores == null || !world.isChunkLoaded(cx, cz)) continue;
+                ChunkOres chunk = data.chunks.get(key);
+                if (chunk == null || chunk.hidden.isEmpty() || !world.isChunkLoaded(cx, cz)) continue;
 
-                boolean remaining = false;
-                for (int i = 0; i < ores.length; i++) {
-                    long pos = ores[i];
-                    if (pos == CHECKED) continue;
+                for (Long posObj : chunk.hidden) {
+                    long pos = posObj;
                     int x = unpackX(pos);
                     int y = unpackY(pos);
                     int z = unpackZ(pos);
                     int dx = x - px;
                     int dy = y - py;
                     int dz = z - pz;
-                    boolean shown = data.isRevealed(key, pos);
+                    boolean shown = chunk.revealed.contains(pos);
                     if (dx * dx + dy * dy + dz * dz > (shown ? hideSq : showSq)) {
-                        remaining = true;
                         continue;
                     }
 
                     Block block = world.getBlockAt(x, y, z);
                     if (!plugin.getCompatibility().isOre(block.getType())) {
-                        ores[i] = CHECKED;
+                        chunk.hidden.remove(pos);
+                        chunk.revealed.remove(pos);
                         continue;
                     }
                     int visibility = sight.visibility(eyeX, eyeY, eyeZ, x, y, z);
@@ -229,13 +208,12 @@ public class BlockManager implements Listener {
                         hideFromPlayer(player, block);
                     }
                     if (visibility == Sight.ENCLOSED) {
-                        ores[i] = CHECKED;
-                    } else {
-                        remaining = true;
+                        chunk.hidden.remove(pos);
+                        chunk.revealed.remove(pos);
                     }
                 }
-                if (!remaining) {
-                    data.hiddenOres.remove(key, ores);
+                if (chunk.hidden.isEmpty()) {
+                    data.chunks.remove(key, chunk);
                 }
             }
         }
@@ -285,12 +263,12 @@ public class BlockManager implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerMove(PlayerMoveEvent event) {
         PlayerData data = players.get(event.getPlayer().getUniqueId());
-        if (data == null || data.hiddenOres.isEmpty() || event.getTo() == null) return;
+        if (data == null || data.chunks.isEmpty() || event.getTo() == null) return;
 
         long now = System.currentTimeMillis();
         if (now - data.lastProximityCheck < CHECK_INTERVAL_MS) return;
         Location to = event.getTo();
-        int version = data.version;
+        int version = data.version.get();
         if (version == data.lastCheckVersion && to.getWorld() == data.lastCheckWorld
             && Math.abs(to.getX() - data.lastCheckX) < 0.3 && Math.abs(to.getY() - data.lastCheckY) < 0.3
             && Math.abs(to.getZ() - data.lastCheckZ) < 0.3) {
@@ -372,10 +350,11 @@ public class BlockManager implements Listener {
                 sight.setAir(b);
             }
         }
+        Set<Block> checked = new HashSet<Block>();
         for (Block b : blocks) {
             for (int[] off : Sight.OFFSETS) {
                 Block adj = b.getRelative(off[0], off[1], off[2]);
-                if (plugin.getCompatibility().isOre(adj.getType())) {
+                if (checked.add(adj) && plugin.getCompatibility().isOre(adj.getType())) {
                     revealToViewers(adj, sight);
                 }
             }
@@ -406,18 +385,17 @@ public class BlockManager implements Listener {
         clearPlayerCache(event.getPlayer().getUniqueId());
     }
 
+    private static class ChunkOres {
+        final Set<Long> hidden = ConcurrentHashMap.newKeySet();
+        final Set<Long> revealed = ConcurrentHashMap.newKeySet();
+    }
+
     private static class PlayerData {
-        final ConcurrentMap<Long, Set<Long>> revealed = new ConcurrentHashMap<Long, Set<Long>>();
-        final ConcurrentMap<Long, long[]> hiddenOres = new ConcurrentHashMap<Long, long[]>();
+        final ConcurrentMap<Long, ChunkOres> chunks = new ConcurrentHashMap<Long, ChunkOres>();
+        final AtomicInteger version = new AtomicInteger();
         volatile long lastProximityCheck;
-        volatile int version;
         int lastCheckVersion = -1;
         World lastCheckWorld;
         double lastCheckX, lastCheckY, lastCheckZ;
-
-        boolean isRevealed(long chunkKey, long pos) {
-            Set<Long> chunk = revealed.get(chunkKey);
-            return chunk != null && chunk.contains(pos);
-        }
     }
 }
